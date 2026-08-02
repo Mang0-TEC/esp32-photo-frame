@@ -2,18 +2,29 @@
 
 **Proyecto:** Marco de fotos digital con servidor local WiFi
 **Presupuesto objetivo:** $700 MXN
-**Costo real a comprar:** $261 MXN
+**Costo real a comprar:** $387 MXN
 
 ---
 
-## A. Comprar en Unit Electronics
+## A. Comprar
 
-| # | Componente | SKU | Cant. | Precio |
-|---|---|---|---|---|
-| 1 | Módulo TFT ST7796S 3.5" IPS 320×480 SPI | AR3952 | 1 | $196 |
-| 2 | Lector de Memorias SD H95 | AR0532 | 1 | $23 |
-| 3 | GY-302 Sensor de intensidad luminosa BH1750 | — | 1 | $42 |
-| | **Subtotal** | | | **$261** |
+| # | Componente | SKU | Proveedor | Cant. | Precio |
+|---|---|---|---|---|---|
+| 1 | Módulo TFT ST7796S 3.5" IPS 320×480 SPI | AR3952 | Unit Electronics | 1 | $196 |
+| 2 | Lector de Memorias SD H95 | AR0532 | Unit Electronics | 1 | $23 |
+| 3 | GY-302 Sensor de intensidad luminosa BH1750 | — | Unit Electronics | 1 | $42 |
+| 4 | ESP32 DevKit V1 **WROOM**, USB-C | — | Por definir | 1 | $126 |
+| | **Subtotal** | | | | **$387** |
+
+**Por qué el ESP32 está aquí y no en inventario:** la unidad USB-C que había
+resultó defectuosa — no transmite ni sincroniza con esptool, ni en macOS ni en
+Windows, pese a 3.3 V correctos, `EN` liberado y loopback TX0↔RX0 exitoso.
+Diagnóstico cerrado, no se reabre. Es reposición de una unidad fallada, no un
+componente que faltara en el diseño original: de ahí que el presupuesto pasara
+de $261 a $387.
+
+**Debe ser WROOM, no WROVER.** La WROVER ocupa GPIO16 y GPIO17 con la PSRAM, y
+ahí van `RST` y `DC` del display.
 
 ---
 
@@ -21,17 +32,22 @@
 
 | # | Componente | Nota |
 |---|---|---|
-| 4 | ESP32 DevKit D0WD-V3 (USB-C) | El de USB-C, **no** la WROOM micro-USB |
-| 5 | Tarjeta SD 8 GB | FAT32, fotos en subdirectorio `/fotos/` |
-| 6 | Cargador USB 5 V ≥1 A + cable USB-C | Alimentación permanente |
-| 7 | Capacitor electrolítico 100 µF / 16 V | ✔ Confirmado |
-| 8 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas |
-| 9 | Transistor PN2222A (NPN, TO-92) | ✔ Sustituye al 2N7000 |
-| 10 | LED RGB 5 mm **cátodo común** | ✔ Sustituye a los dos LEDs separados |
-| 11 | Resistencias 470 Ω ×2, 1 kΩ, 10 kΩ | ✔ Confirmado |
-| 12 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
-| 13 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
-| 14 | Filamento PLA | Carcasa y bisel |
+| 5 | ESP32 DevKit WROOM, **micro-USB** | **Placa de desarrollo.** Puente CP2102, `/dev/cu.usbserial-0001`. Chip verificado `ESP32-D0WD-V3 rev v3.0`, cristal 40 MHz, flash 4 MB |
+| 6 | Tarjeta SD 8 GB | FAT32, fotos en subdirectorio `/fotos/` |
+| 7 | Cargador USB 5 V ≥1 A + cable USB-C | Alimentación permanente |
+| 8 | Capacitor electrolítico 100 µF / 16 V | ✔ Confirmado |
+| 9 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas |
+| 10 | Transistor PN2222A (NPN, TO-92) | ✔ Sustituye al 2N7000 |
+| 11 | LED RGB 5 mm **cátodo común** | ✔ Sustituye a los dos LEDs separados |
+| 12 | Resistencias 470 Ω ×2, 1 kΩ, 10 kΩ | ✔ Confirmado |
+| 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
+| 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
+| 15 | Filamento PLA | Carcasa y bisel |
+
+La placa micro-USB **no es la unidad final**: micro-USB es mal conector para un
+objeto fijo 24/7 durante años; se afloja y su pad termina desprendiéndose del
+PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
+`ESP32-D0WD-V3` — y el cambio a la USB-C final no toca una sola línea de código.
 
 ---
 
@@ -39,11 +55,11 @@
 
 | # | Componente | Cant. | Para qué |
 |---|---|---|---|
-| 15 | Pad conductor para touch capacitivo | 1 | Ver opciones abajo |
-| 16 | Termofit surtido | — | Aislar uniones soldadas |
-| 17 | Soldadura + flux | — | Header y cableado |
-| 18 | Silicón caliente | — | Alivio de tensión del UTP |
-| 19 | Insertos roscados M3 o tornillos autorroscantes | 4-6 | Cierre de la carcasa |
+| 16 | Pad conductor para touch capacitivo | 1 | Ver opciones abajo |
+| 17 | Termofit surtido | — | Aislar uniones soldadas |
+| 18 | Soldadura + flux | — | Header y cableado |
+| 19 | Silicón caliente | — | Alivio de tensión del UTP |
+| 20 | Insertos roscados M3 o tornillos autorroscantes | 4-6 | Cierre de la carcasa |
 
 ---
 
@@ -52,7 +68,7 @@
 | Componente | Razón |
 |---|---|
 | ESP32-S3 DevKit | TJpg_Decoder trabaja por bloques MCU 16×16; no necesita framebuffer completo. El clásico basta |
-| ESP32 WROOM (micro-USB) | Funciona igual, pero USB-C es mejor conector para objeto fijo 24/7 |
+| ESP32 **WROVER** | Ocupa GPIO16 y GPIO17 con la PSRAM, y ahí van `RST` y `DC` del display |
 | Módulo USB standalone | El pin `5V`/`VIN` del devkit ya entrega VBUS |
 | Step-down LM2596S | Solo haría falta alimentando desde 12 V |
 | Batería LiPo | ~250 mA continuos → ~8 h. LCD necesita alimentación constante. Riesgo de hinchamiento en carcasa sellada |
@@ -203,7 +219,7 @@ Opciones de pad, en orden de preferencia:
 
 **Decisión cerrada:** PlatformIO con `framework = arduino`, **no** ESP-IDF puro.
 
-Razón: las cinco librerías del stack (`TFT_eSPI`, `TJpg_Decoder`, `WiFiManager`, `BH1750`, `ESPAsyncWebServer`) son del ecosistema Arduino. ESP-IDF puro obligaría a reemplazarlas por `esp_lcd` + `esp_jpeg` + provisioning propio — más limpio a largo plazo pero implica reescribir el equivalente de WiFiManager, que es justo la pieza que sostiene la regla 1.
+Razón: las siete librerías del stack (`TFT_eSPI`, `TJpg_Decoder`, `WiFiManager`, `BH1750`, `QRCode`, `ESPAsyncWebServer`, `AsyncTCP`) son del ecosistema Arduino. ESP-IDF puro obligaría a reemplazarlas por `esp_lcd` + `esp_jpeg` + provisioning propio — más limpio a largo plazo pero implica reescribir el equivalente de WiFiManager, que es justo la pieza que sostiene la regla 1.
 
 PlatformIO además fija versiones exactas en un archivo versionado, que es lo que hace el build reproducible dentro de tres años.
 
@@ -218,7 +234,7 @@ Ambas rutas son válidas para el ESP32 clásico. Se elige pioarduino por estar m
 ```ini
 [env:marco]
 ; Pinear a un tag de release concreto, no a "stable" — la etiqueta se mueve
-platform = https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip
+platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
 board     = esp32dev
 framework = arduino
 
@@ -226,13 +242,13 @@ monitor_speed = 115200
 board_build.partitions = huge_app.csv   ; sin OTA, todo el flash para la app
 
 lib_deps =
-    bodmer/TFT_eSPI
-    bodmer/TJpg_Decoder
-    claws/BH1750
-    tzapu/WiFiManager
-    ricmoo/QRCode
-    ESP32Async/ESPAsyncWebServer
-    ESP32Async/AsyncTCP
+    bodmer/TFT_eSPI@2.5.43
+    bodmer/TJpg_Decoder@1.1.0
+    claws/BH1750@1.3.0
+    tzapu/WiFiManager@2.0.17
+    ricmoo/QRCode@0.0.1
+    ESP32Async/ESPAsyncWebServer@3.12.0
+    ESP32Async/AsyncTCP@3.5.0
 
 build_flags =
     ; --- TFT_eSPI: config por flags, NUNCA editando User_Setup.h ---
@@ -266,7 +282,7 @@ build_flags =
 | Librería | Nota |
 |---|---|
 | `ESP32Async/ESPAsyncWebServer` | **No usar `me-no-dev/ESPAsyncWebServer`: archivado el 20-ene-2025, solo lectura.** El fork ESP32Async incluye los fixes de concurrencia de `yubox-node-org`, que es precisamente donde vivían los bugs de upload multipart. Va en 3.x; anuncian una 4.x que dropea ESP8266 e IDF 4.x → **fijar la versión** |
-| `ESP32Async/AsyncTCP` | Dependencia obligatoria del anterior. Debe venir del mismo fork, no mezclar con la de me-no-dev |
+| `ESP32Async/AsyncTCP` | Dependencia obligatoria del anterior. Debe venir del mismo fork, no mezclar con la de me-no-dev. **Su hilo `async_tcp` corre a prioridad 10 con 16384 B de stack** (`CONFIG_ASYNC_TCP_STACK_SIZE`, `8192*2`) — ver la trampa de abajo |
 | `tzapu/WiFiManager` | Ver pendiente #5. Riesgo abierto con arduino-esp32 ≥3.1.0 |
 | `bodmer/TJpg_Decoder` | **No confundir con `JPEGDecoder`**, el anterior del mismo autor. El ejemplo oficial `ESP32_SDcard_jpeg` usa el viejo; la API es distinta |
 
@@ -277,9 +293,23 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
     https://github.com/ESP32Async/AsyncTCP.git
 ```
 
-**Después del primer build exitoso, correr `pio pkg list` y pinear las versiones exactas** en `lib_deps`. Sin eso, `latest` cambia el comportamiento bajo los pies.
+**Las siete versiones ya están pineadas** — las de arriba son las que resolvieron en el primer build limpio y las que están en el `platformio.ini` real. No usar `latest` en ninguna: cambia el comportamiento bajo los pies. Al actualizar cualquiera, actualizar también este bloque.
 
 **Afinación de `SPI_FREQUENCY`:** arrancar en 27 MHz para las primeras pruebas. Con imagen estable, subir a 40 y luego a 80. Si aparecen líneas o píxeles corridos, bajar un escalón. Es empírico y depende del largo de los cables.
+
+### Nunca escribir a la SD desde el callback de upload
+
+El callback de upload de `ESPAsyncWebServer` **no corre en `loop()`**: corre en el hilo `async_tcp`, a prioridad 10 y con 16384 B de stack. Bloquearlo con I/O de tarjeta SD —una escritura puede tardar decenas de milisegundos cuando el bloque necesita borrado previo— provoca watchdog y conexiones caídas. Y está en la única ruta por la que entran fotos al marco.
+
+El patrón correcto, aprovechando que los archivos son de ~25 KB:
+
+- Acumular los chunks en un buffer de heap.
+- Escribir a la SD **una sola vez**, cuando `final == true`.
+- **Tope duro de 64 KB.** Si se excede, responder `413` y liberar el buffer de inmediato. Sin ese tope, un cliente roto o malicioso tumba el heap del ESP32.
+
+Si aun con una sola escritura truena el watchdog, la salida es cola de FreeRTOS + tarea dedicada de escritura y responder `202` en vez de `200`. Es más complejo y solo se paga si hace falta — no empezar ahí.
+
+Detalle de los endpoints y sus códigos de respuesta en §4 de la especificación funcional.
 
 ---
 
@@ -291,7 +321,7 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 |---|---|
 | Controlador | ST7796S |
 | Panel | TFT **IPS** |
-| Resolución | 320×480 (relación 3:2) |
+| Resolución | 320×480 nativo (2:3) — se monta horizontal, 480×320 (3:2) |
 | Voltaje | 3.3 / 5 VDC |
 | Área de pantalla | 74.5 × 50 mm |
 | PCB | 94.8 × 59.19 mm |
@@ -304,20 +334,22 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 ### Capacidad de la SD de 8 GB
 
-~7.4 GiB utilizables tras formatear FAT32:
+~7.4 GiB utilizables tras formatear FAT32. Estimación de cuántas fotos caben, según el peso que acabe teniendo cada una:
 
-| Calidad por foto | Fotos que caben |
+| Peso por foto | Fotos que caben |
 |---|---|
-| 25 KB (normal) | ~304,000 |
-| 40 KB (alta) | ~190,000 |
-| 60 KB (máxima) | ~126,000 |
+| 25 KB | ~304,000 |
+| 40 KB | ~190,000 |
+| 60 KB | ~126,000 |
+
+> Esta tabla es **estimación de capacidad**, no un ajuste ofrecido a quien sube fotos. El peso lo decide el firmware de la página (presupuesto de 0.167 B/píxel, ver §4 de la especificación funcional); quien usa el marco nunca elige una calidad. Pedirle esa decisión violaría la regla 1.
 
 La capacidad dejó de ser una restricción del proyecto.
 
 **Dos límites reales que sí importan:**
 
-1. **No poner las fotos en la raíz.** FAT32 limita el directorio raíz a 512 entradas, y los nombres largos consumen varias cada uno → truena alrededor de las 150-200 fotos. Un subdirectorio (`/fotos/`) no tiene ese límite. Falla silenciosa clásica.
-2. **Archivo manifiesto.** Recorrer el directorio en cada cambio de foto se vuelve lento con miles de archivos. Mantener un índice que el ESP32 lee al arrancar y actualiza solo al subir o borrar.
+1. **No poner las fotos en la raíz.** No es por un límite de entradas: el famoso tope de 512 entradas en el directorio raíz es de **FAT16**, no de FAT32 — en FAT32 la raíz es una cadena de clusters ordinaria y crece igual que cualquier subdirectorio. Las razones reales son otras: macOS deja metadatos en la raíz del volumen (`.Spotlight-V100`, `.fseventsd`, `.Trashes`) que el firmware tendría que filtrar en cada recorrido, y conviene separar las fotos de `/manifest.txt` y de cualquier otro archivo de servicio. Las fotos van en `/fotos/`.
+2. **Archivo manifiesto.** Recorrer el directorio en cada cambio de foto se vuelve lento con miles de archivos. Mantener un índice que el ESP32 lee al arrancar y actualiza solo al subir o borrar. Formato y fallback en §3 de la especificación funcional.
 
 ### BH1750
 

@@ -21,7 +21,8 @@ Este proyecto se justifica por lo que el producto comercial **no** puede hacer:
   comerciales.
 - Está hecho por quien lo regala.
 
-Costo en componentes nuevos: **~$390 MXN**.
+Costo en componentes nuevos: **$387 MXN** — $261 de pantalla, lector SD y sensor
+de luz, más $126 del ESP32 de reposición.
 
 ---
 
@@ -113,7 +114,7 @@ pio device monitor       # 115200
 |---|---|
 | Documentos de diseño | Cerrados |
 | Toolchain | Verificado, build limpio y reproducible |
-| Página de subida | En curso |
+| Página de subida | Sin empezar — es la siguiente pieza |
 | Firmware | Sin empezar |
 | Carcasa | Sin empezar |
 

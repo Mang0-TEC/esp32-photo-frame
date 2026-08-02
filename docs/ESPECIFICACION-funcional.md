@@ -113,24 +113,47 @@ El ESP32 no puede reescalar una foto de 12 megapixeles — no le alcanza la memo
 **Flujo:**
 
 1. La persona selecciona **una o varias** fotos de su galería.
-2. Cada una se recorta automáticamente al centro y se muestra en una rejilla de miniaturas.
-3. Si alguna quedó mal recortada, toca la miniatura y ajusta el recuadro a mano.
-4. El navegador reduce cada foto para caber en 320×480 respetando proporción.
-5. Las reencodea como JPEG dentro de su presupuesto de bytes.
+2. El navegador prepara cada una en orden y las va mostrando en una rejilla de miniaturas. Ese orden es el de subida, el del manifiesto y el de reproducción en el marco.
+3. Cada foto se reduce para **caber completa** en 320×480 respetando su proporción. **No se recorta nada:** lo que sobra de pantalla queda en negro, y el negro lo pinta el firmware, no el archivo (§6).
+4. Si a alguna le sobra demasiado negro, o el encuadre no es el que se quería, se toca su miniatura y se ajusta el recuadro a mano. Es opcional y es foto por foto; al confirmar se rehacen los pasos 3 y 5 solo para esa.
+5. Cada una se reencodea como JPEG dentro de su presupuesto de bytes.
 6. **Eso** es lo único que se sube al ESP32.
 
 Desde la perspectiva de quien lo usa, simplemente eligió fotos y funcionaron. Esta pieza es la que hace que toda la arquitectura se sostenga, y es la más delicada del proyecto.
 
-### Multi-selección con recorte al centro y edición opcional
+### Multi-selección: foto completa por defecto, recorte opcional por foto
 
-Se eligen N fotos de golpe y **todas se recortan automáticamente al centro**; tocar una miniatura abre el editor de recuadro para esa foto en particular.
+Se eligen N fotos de golpe y **todas entran completas**, con barras negras si su proporción no es la del marco. Ninguna se recorta sin que alguien lo pida: tocar una miniatura abre el editor de recuadro para esa foto en particular, y solo esa.
 
-El recorte automático al centro funciona la mayoría de las veces pero decapita gente en las verticales, así que el editor manual tiene que existir. Lo que no puede existir es la obligación de usarlo: pedir un recorte manual por cada una de 30 fotos de un viaje convertiría la subida en una tarea.
+**Por qué el default es entrar completa y no recortar al centro.** Un recorte automático decapita gente en las verticales y se come los extremos de las horizontales, en silencio, sin que nadie lo haya pedido y sin que se note en una miniatura de teléfono. Perder pantalla es reversible con un toque; perder la cabeza de alguien no se descubre hasta que el marco ya está en la sala. Y el aviso de barras de §6 no tendría nada que avisar: con recorte automático no habría barras nunca, y media §6 quedaría sin objeto.
+
+**Lo que tampoco puede existir es la obligación de recortar.** Pedir un recuadro manual por cada una de 30 fotos de un viaje convertiría la subida en una tarea. El editor está a un toque de distancia y ahí se queda: quien no lo toque sube 30 fotos completas y el marco funciona.
 
 Dos consecuencias que no son negociables:
 
 - **Procesamiento secuencial, cediendo al event loop entre fotos.** Procesar N imágenes de 12 MP en cadena congela el hilo principal del celular y el navegador ofrece matar la pestaña. Worker con `OffscreenCanvas` solo si se mide lento — es optimización, no punto de partida.
 - **Concurrencia de subida = 1.** Las fotos se suben de una en una. Dos multipart simultáneos escribiendo a la misma SD es pedir corrupción. Si falla la subida de algunas, se reintentan **solo esas**, no la tanda completa.
+
+### La cola de preparación
+
+Cada foto de la tanda es un elemento con **identidad propia y estado propio**, no una posición en un arreglo. Es lo que permite que se reintente únicamente lo que falló al subir, como exige el punto anterior.
+
+| Estado | Qué significa |
+|---|---|
+| `pendiente` | Elegida, todavía sin preparar |
+| `procesando` | Escalando o comprimiendo |
+| `lista` | Preparada, esperando a subir |
+| `error` | No se pudo preparar (archivo ilegible, formato que el navegador no abre) |
+| `subiendo` · `subida` · `fallo` | Estados de la capa de red |
+
+- **Un error en una foto no tumba la tanda.** Se marca esa, se sigue con la siguiente, y al final se dice cuántas fallaron.
+- **Elegir más fotos anexa, nunca reemplaza.** Volver al selector después de preparar diez y elegir tres más deja trece, no tres. Nadie va a intuir que abrir el selector destruye trabajo ya hecho —y con la capa de subida encima serían fotos ya listas para subir—, así que lo único que vacía la tanda es el botón de limpiar, que es un gesto explícito. Anexar al final además preserva «orden de selección = orden de subida».
+- **Se puede cancelar a media tanda.** Lo ya preparado se conserva —es trabajo válido— y las que faltaban quedan en `pendiente`, listas para continuar.
+- **Tope de 30 fotos en la tanda.** No es memoria de los archivos preparados —30 × 32 KB son 960 KB— sino de las miniaturas: 30 bitmaps decodificados de 320×480 son ~18 MB vivos en la rejilla. El tope existe sobre todo porque el selector de iOS tiene «Seleccionar todo» a un toque, y vaciar un álbum de 800 fotos mataría la pestaña a media tanda, perdiendo el trabajo ya hecho y sin explicación. Al pasarse se avisa en lenguaje llano y se aceptan las que caben.
+
+> **Sin verificar: el orden que entrega el selector de iOS.** No está medido si `<input type="file" multiple>` en Safari de iOS devuelve las fotos en el orden en que se tocaron o en el de la fototeca. Como ese orden acaba siendo el de reproducción en el marco, la rejilla numera cada miniatura para que sea visible antes de subir. Si la medición dice que el selector impone su propio orden, las salidas son ordenar por fecha de captura o permitir reordenar arrastrando — ninguna de las dos se construye a ciegas.
+>
+> **Sin verificar: que un `File` siga siendo legible minutos después.** El diseño se apoya en que los `File` del selector son handles a disco y no memoria, de modo que conservar treinta no cuesta nada y **releerlos** es lo que sostiene tanto el recorte manual (que re-ejecuta el pipeline desde el original) como la subida. En Safari de iOS esos archivos viven en un temporal y hay reportes de `NotReadableError` al releerlos pasado un rato o bajo presión de memoria. **No está medido en este proyecto y no se afirma.** Si resulta falso, la salida es conservar el blob ya comprimido y aceptar que el recorte parta de él, con la pérdida de calidad que eso implica — decisión distinta, y mejor tomarla sabiendo.
 
 ### Presupuesto de bytes: proporcional a los píxeles de salida
 
@@ -258,7 +281,7 @@ Las fotos que faltan por pasar: una vertical de iPhone sin editar y sin pasar po
 
 Las fotos de celular vienen en 3:4 o 9:16 contra una pantalla de 2:3, así que siempre hay algo que decidir. El recuadro es arrastrable, con vista previa de cómo va a quedar, y **relación fija 2:3** — la de la pantalla, porque el objetivo del recorte es justamente que la foto la llene.
 
-Tras la decisión de orientación (§6) el editor dejó de ser una mejora opcional: es la compensación de que las fotos horizontales queden a media pantalla. Una 4:3 horizontal sin recortar sale en 320×240 con la mitad del alto en negro; recortada a 2:3 llena los 320×480.
+Tras la decisión de orientación (§6) el editor dejó de ser una mejora prescindible: es la compensación de que las fotos horizontales queden a media pantalla. Una 4:3 horizontal sin recortar sale en 320×240 con la mitad del alto en negro; recortada a 2:3 llena los 320×480.
 
 Tres restricciones de implementación:
 
@@ -289,6 +312,10 @@ POST /delete            → {"n":"00000042.JPG"}
 
 **El upload nunca escribe a la SD desde su callback.** Corre en el hilo `async_tcp` a prioridad 10, y bloquearlo con I/O de tarjeta provoca watchdog. Se acumula en heap y se escribe una sola vez al terminar, con tope duro de 64 KB. Detalle completo en el BOM.
 
+**`onNotFound` tiene que estar definido y responder corto.** Cinco rutas y ningún catch-all significa que todo lo demás cae ahí, y no es hipotético: el navegador pide `/favicon.ico` solo, sin que nadie se lo mande — medido en Chrome. Un 404 con dos palabras es la respuesta correcta (el icono de pestaña sale genérico y ya); lo que no puede quedar es sin definir.
+
+> **Por eso la página nunca mete rutas nuevas en el historial.** El detalle de una foto usa `history.pushState` con la **misma** URL. Medido en Chrome: `/foto/3` lanza `SecurityError` en `file://` —por el origen `null`, que es coincidencia y no una protección— pero se **acepta sin quejarse sobre `http://`**. O sea que una ruta inventada pasaría todas las pruebas de escritorio y de LAN, y solo daría 404 en el marco, al recargar o compartir el enlace: el único entorno donde nadie va a estar depurando. Si alguna vez hace falta estado en la URL, va en el fragmento, que no viaja al servidor.
+
 ### Dónde vive la página
 
 **Embebida en el binario, gzipeada, en PROGMEM.** No en SPIFFS, no en la SD.
@@ -297,6 +324,8 @@ POST /delete            → {"n":"00000042.JPG"}
 - **No en SPIFFS** —aunque `huge_app.csv` reserva 896 KB— porque obligaría a un `pio run -t uploadfs` aparte del flasheo. Un segundo paso que hay que recordar tres años después es exactamente el tipo de cosa que rompe un objeto sin mantenimiento.
 
 Con PROGMEM hay una sola imagen que flashear y es imposible que el firmware y su página queden desincronizados. Consecuencia para `web/`: el script de build no solo concatena a un HTML único, también lo gzipea y emite el array de C.
+
+**El array de C va a un archivo aparte, y ese archivo se decide antes de generarlo.** Tras la etapa 3 la página pesa 42.1 KB en claro y **14.2 KB gzipeados** con `gzip -9`. En flash es irrelevante —3 MB de partición—, pero como fuente de C son cinco caracteres por byte (`0xNN,`), o sea **~85 KB de texto que cambia entero cada vez que se toca una línea de la página**. Las opciones son `.gitignore` —y entonces el build tiene que ser reproducible o el repo no basta para flashear— o versionarlo sabiendo que va a ensuciar todos los diffs. Lo que no puede pasar es descubrirlo al hacer el primer commit.
 
 ---
 
@@ -549,7 +578,7 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
 | Carga de fotos | Servidor web local + Canvas | App, SD extraíble, USB |
 | Redimensionado | En el navegador del celular | En el ESP32 (imposible) |
-| Selección de fotos | Multi-selección, recorte al centro + edición opcional | Una a la vez (tedioso con 30 fotos), sin edición (decapita verticales) |
+| Selección de fotos | Multi-selección; foto completa con barras por defecto, recorte manual opcional por foto | Una a la vez (tedioso con 30 fotos), recorte automático al centro (decapita gente en silencio y deja el aviso de barras sin objeto), recorte obligatorio por foto (convierte la subida en una tarea) |
 | Peso del JPEG | 0.213 B/píxel de salida (32 KB = un cluster al llenar la pantalla), calidad acotada [0.62, 0.92] | Tamaño plano, calidad fija, selector de calidad para el usuario |
 | Nombres de archivo | `NNNNNNNN.JPG`, contador en NVS | Nombres largos (gastan varias entradas de directorio) |
 | Índice | `/manifest.txt` plano, con fallback a recorrer `/fotos/` | JSON (obliga a construir la cadena en heap) |

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Marco de Fotos — preparar imagen</title>
+<title>Marco de Fotos — preparar fotos</title>
 <style>
   :root{
     --bg:#eceef0;
@@ -62,7 +62,10 @@
     height:100%;
     object-fit:contain;       /* pillarbox: exactamente lo que hará el firmware */
   }
-  .stage.empty{color:#6b7178;font-size:13px;background:#1a1c1f}
+  .stage.empty{
+    color:#6b7178;font-size:13px;background:#1a1c1f;
+    display:flex;align-items:center;justify-content:center;text-align:center;padding:0 24px;
+  }
 
   .caption{font-size:12px;color:var(--ink-soft);margin-top:8px;text-align:center}
   /* Aviso en lenguaje llano, visible también en producción: es la única pista de
@@ -73,19 +76,68 @@
     padding:9px 11px;margin:10px 0 0;
   }
 
+  /* ── Rejilla de la tanda ─────────────────────────────────────────────── */
+  .barra{display:flex;align-items:center;gap:10px;margin:0 0 12px}
+  .barra .estado{flex:1;margin:0;font-size:13.5px;color:var(--ink-soft)}
+  .btn-min{
+    padding:7px 12px;border-radius:7px;border:1px solid var(--line);
+    background:#fff;color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+  }
+  .rejilla{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  /* Cada mosaico es 2:3 con fondo negro y object-fit:contain, o sea las mismas
+     reglas que .stage: la miniatura ES la simulación del marco, y las franjas
+     negras se ven literalmente sin que haya que explicarlas. */
+  .mosaico{
+    position:relative;display:block;width:100%;padding:0;margin:0;
+    border:0;border-radius:6px;overflow:hidden;
+    background:#1a1c1f;aspect-ratio:320/480;
+    font:inherit;color:#fff;cursor:default;-webkit-tap-highlight-color:transparent;
+  }
+  .mosaico.lista{background:#000;cursor:pointer}
+  .mosaico.err{background:#2b1618;cursor:pointer}
+  .mosaico img{display:block;width:100%;height:100%;object-fit:contain}
+  .mosaico:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+  .mosaico .num{
+    position:absolute;top:4px;left:4px;min-width:18px;height:18px;padding:0 4px;
+    border-radius:9px;background:rgba(0,0,0,.6);
+    font-size:11px;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;
+  }
+  /* Píldora en la esquina, no una franja de borde a borde: cuando las barras negras
+     van a los LADOS (una captura de celular, p.ej.) una franja inferior taparía la
+     foto justo donde sí hay imagen. */
+  .mosaico .marca{
+    position:absolute;top:4px;right:4px;height:18px;padding:0 6px;
+    border-radius:9px;background:rgba(0,0,0,.6);
+    font-size:10.5px;line-height:18px;
+  }
+  .mosaico .fallo{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:11.5px;line-height:1.3;padding:0 6px;text-align:center;color:#f2b8b8;
+  }
+  /* Barrido mientras se prepara. Sin texto ni porcentajes: no es información
+     técnica, es que algo está pasando. */
+  .mosaico.proc::after{
+    content:"";position:absolute;inset:0;
+    background:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.10) 50%,transparent 70%);
+    animation:barrido 1.15s linear infinite;
+  }
+  @media (prefers-reduced-motion:reduce){ .mosaico.proc::after{animation:none} }
+  @keyframes barrido{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+
   table.diag{width:100%;border-collapse:collapse;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   table.diag th{text-align:left;font-weight:400;color:var(--ink-soft);padding:3px 0;width:47%}
   table.diag td{text-align:right;padding:3px 0;font-variant-numeric:tabular-nums}
   .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
 
   .actions{display:flex;gap:10px}
-  button{
+  .actions button{
     flex:1;padding:13px;border-radius:8px;border:1px solid var(--line);
     background:#fff;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;
   }
-  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button:disabled{opacity:.45;cursor:default}
 
+  .volver{margin:0 0 12px}
   .hint{font-size:12.5px;color:var(--ink-soft);margin:10px 0 0}
   code{font:12px ui-monospace,Menlo,Consolas,monospace;background:#e3e6e9;padding:1px 4px;border-radius:3px}
 </style>
@@ -93,29 +145,66 @@
 <body>
 
 <h1>Marco de fotos</h1>
-<p class="sub">Prepara la imagen antes de subirla. Todo ocurre en este teléfono; no se envía nada todavía.</p>
+<p class="sub">Prepara las fotos antes de subirlas. Todo ocurre en este teléfono; no se envía nada todavía.</p>
 
-<div class="card">
-  <input type="file" id="file" accept="image/*">
-  <label class="pick" for="file">Elegir una foto</label>
-</div>
+<!-- ══════════════ VISTA REJILLA ══════════════ -->
+<div id="vistaRejilla">
 
-<div class="card">
-  <div class="stage empty" id="stage">Aquí verás cómo va a quedar en la pantalla</div>
-  <p class="caption" id="caption">320 × 480 · así se ve el marco</p>
-  <p class="aviso" id="aviso" hidden></p>
-</div>
-
-<div class="card" id="diagCard" hidden>
-  <table class="diag" id="diag"></table>
-</div>
-
-<div class="card">
-  <div class="actions">
-    <button id="btnDownload" disabled>Guardar JPEG</button>
-    <button id="btnUpload" class="primary" disabled>Subir al marco</button>
+  <div class="card">
+    <input type="file" id="file" accept="image/*" multiple>
+    <label class="pick" for="file" id="lblPick">Elegir fotos</label>
+    <p class="aviso" id="avisoTope" hidden></p>
   </div>
-  <p class="hint" id="hint">Sin marco conectado, «Guardar JPEG» descarga el archivo que se subiría, para revisarlo en la computadora.</p>
+
+  <div class="card" id="cardVacia">
+    <div class="stage empty">Aquí verás cómo van a quedar en la pantalla</div>
+  </div>
+
+  <div class="card" id="cardTanda" hidden>
+    <div class="barra">
+      <p class="estado" id="estadoTanda" aria-live="polite"></p>
+      <button type="button" class="btn-min" id="btnCola" hidden></button>
+    </div>
+    <div class="rejilla" id="rejilla"></div>
+    <p class="aviso" id="avisoFranjas" hidden></p>
+    <p class="hint" id="resumenTanda" hidden></p>
+  </div>
+
+  <div class="card" id="cardAcciones" hidden>
+    <div class="actions">
+      <button type="button" id="btnLimpiar">Limpiar</button>
+      <button type="button" id="btnSubirTanda" class="primary" hidden>Subir al marco</button>
+    </div>
+    <p class="hint" id="hintTanda"></p>
+  </div>
+
+</div>
+
+<!-- ══════════════ VISTA DETALLE ══════════════ -->
+<div id="vistaDetalle" hidden>
+
+  <button type="button" class="btn-min volver" id="btnVolver">‹ Volver a las fotos</button>
+
+  <div class="card">
+    <div class="stage empty" id="stage"></div>
+    <p class="caption" id="caption"></p>
+    <p class="aviso" id="aviso" hidden></p>
+  </div>
+
+  <!-- Etapa 4: «Ajustar recuadro» entra aquí, entre el stage y los botones. -->
+
+  <div class="card" id="diagCard" hidden>
+    <table class="diag" id="diag"></table>
+  </div>
+
+  <div class="card">
+    <div class="actions">
+      <button type="button" id="btnDownload" disabled>Guardar JPEG</button>
+      <button type="button" id="btnUpload" class="primary" disabled>Subir al marco</button>
+    </div>
+    <p class="hint" id="hint">Sin marco conectado, «Guardar JPEG» descarga el archivo que se subiría, para revisarlo en la computadora.</p>
+  </div>
+
 </div>
 
 <script>
@@ -146,6 +235,14 @@ const CFG = {
   Q_STEPS: 6,             // pasos de búsqueda binaria de calidad
 
   AVISO_BARRAS: 0.20,     // fracción de un eje a partir de la cual se avisa
+
+  /* Tope de fotos por tanda. No lo impone el peso de lo preparado —30 × 32 KB son
+     960 KB— sino las miniaturas: 30 bitmaps decodificados de 320×480 son ~18 MB
+     vivos en la rejilla. Existe sobre todo porque el selector de iOS tiene
+     «Seleccionar todo» a un toque, y vaciar un álbum de 800 fotos mataría la
+     pestaña a media tanda, tirando el trabajo ya hecho y sin explicación. */
+  MAX_TANDA: 30,
+
   DIAG: true,             // panel de diagnóstico: false para producción
   ENDPOINT: null          // etapa 5: "/upload". null → el botón de subir no existe
 };
@@ -153,8 +250,38 @@ const CFG = {
 const TOPE_FIRMWARE = 64 * 1024;   // el callback de upload responde 413 por encima
 
 const $ = id => document.getElementById(id);
-let resultado = null;     // { blob, canvas, nombre }
-let urlPreview = null;    // object URL de la vista previa en curso, para revocarlo
+
+/* ─────────────────────────────────────────────────────────────
+   0. LA COLA
+   Cada foto es un elemento con identidad y estado propios, NO una posición en un
+   arreglo. Es lo que permite que la etapa 5 reintente solo las que fallaron al
+   subir, como exige §4.
+   ───────────────────────────────────────────────────────────── */
+const ESTADO = {
+  PENDIENTE:"pendiente", PROCESANDO:"procesando", LISTA:"lista", ERROR:"error",
+  SUBIENDO:"subiendo", SUBIDA:"subida", FALLO:"fallo"   // los tres últimos: etapa 5
+};
+
+/* item = {
+     id,            entero monótono de sesión — estable, NO el índice del arreglo
+     file,          handle del selector: se conserva, lo releen las etapas 4 y 5
+     estado,
+     recorte,       null = foto completa (contain). Etapa 4 pone aquí {x,y,w,h} 0-1
+     blob, url,     url = object URL del blob; sirve a la miniatura y al detalle
+     sw, sh, dstW, dstH, maxBytes, q, iters, pasos, exif, sof, entradaBytes,
+     tDecode, tEscala, tEncode, tTotal,
+     aviso,         texto del aviso de franjas, o null — se calcula al preparar
+     error,         mensaje en lenguaje llano si estado === ERROR
+     nombreRemoto   etapa 5: el "00000042.JPG" que devuelva el ESP32
+   } */
+const cola = { items: [], seq: 0, corriendo: false, cancelado: false };
+
+const nuevoItem = file => ({
+  id: ++cola.seq, file, estado: ESTADO.PENDIENTE,
+  recorte: null, blob: null, url: null, aviso: null, error: null, nombreRemoto: null
+});
+
+const cuenta = est => cola.items.filter(i => i.estado === est).length;
 
 /* ─────────────────────────────────────────────────────────────
    1. LECTURA DEL EXIF — solo el tag Orientation (0x0112)
@@ -326,37 +453,118 @@ async function procesar(file){
   const sof  = leerDimensionesSOF(buf);
 
   const { img, url } = await cargarImagen(file);
-  const sw = img.naturalWidth, sh = img.naturalHeight;
+  let urlVivo = true;
+  try {
+    const sw = img.naturalWidth, sh = img.naturalHeight;
 
-  // Contain: cabe dentro de 320×480 respetando proporción, sin ampliar.
-  const escala = Math.min(CFG.TARGET_W / sw, CFG.TARGET_H / sh, 1);
-  const dstW = Math.max(1, Math.round(sw * escala));
-  const dstH = Math.max(1, Math.round(sh * escala));
+    // Contain: cabe dentro de 320×480 respetando proporción, sin ampliar.
+    const escala = Math.min(CFG.TARGET_W / sw, CFG.TARGET_H / sh, 1);
+    const dstW = Math.max(1, Math.round(sw * escala));
+    const dstH = Math.max(1, Math.round(sh * escala));
 
-  // El presupuesto sale de los píxeles que esta foto va a ocupar de pantalla.
-  const maxBytes = Math.round(dstW * dstH * CFG.BYTES_PER_PX);
+    // El presupuesto sale de los píxeles que esta foto va a ocupar de pantalla.
+    const maxBytes = Math.round(dstW * dstH * CFG.BYTES_PER_PX);
 
-  const t1 = performance.now();
-  const { canvas, pasos } = escalar(img, 0, 0, sw, sh, dstW, dstH);
-  const t2 = performance.now();
+    const t1 = performance.now();
+    const { canvas, pasos } = escalar(img, 0, 0, sw, sh, dstW, dstH);
+    const t2 = performance.now();
 
-  // Liberar el <img> ANTES de comprimir, no después. El bitmap decodificado de una
-  // foto de 12 MP son ~48 MB que quedarían vivos durante las llamadas a toBlob, con
-  // el GC trabajando entre cada una.
-  // Medido: 433 ms → 3 ms por llamada a toBlob; el pipeline pasó de 3464 ms a 15 ms.
-  // NO mover estas dos líneas al final. Parece limpieza cosmética y no lo es.
-  URL.revokeObjectURL(url);
-  img.src = "";
+    // Liberar el <img> ANTES de comprimir, no después. El bitmap decodificado de una
+    // foto de 12 MP son ~48 MB que quedarían vivos durante las llamadas a toBlob, con
+    // el GC trabajando entre cada una.
+    // Medido: 433 ms → 3 ms por llamada a toBlob; el pipeline pasó de 3464 ms a 15 ms.
+    // NO mover estas dos líneas al final. Parece limpieza cosmética y no lo es.
+    URL.revokeObjectURL(url); urlVivo = false;
+    img.src = "";
 
-  const { blob, q, iters } = await encodeAlObjetivo(canvas, maxBytes);
-  const t3 = performance.now();
+    const { blob, q, iters } = await encodeAlObjetivo(canvas, maxBytes);
+    const t3 = performance.now();
 
-  return {
-    nombre: file.name, entradaBytes: file.size,
-    exif, sof, sw, sh, dstW, dstH, maxBytes, pasos, q, iters,
-    blob, canvas,
-    tDecode: t1 - t0, tEscala: t2 - t1, tEncode: t3 - t2, tTotal: t3 - t0
-  };
+    // El canvas de salida no lo vuelve a usar nadie: la miniatura y el detalle pintan
+    // el blob, y el recorte manual re-ejecuta el pipeline desde el File original.
+    // Son 320×480×4 = 614 KB por foto; con una tanda de 30 serían ~18 MB retenidos
+    // sin motivo. Va DESPUÉS del encode: hasta aquí el canvas es la fuente de toBlob.
+    canvas.width = canvas.height = 0;
+
+    return {
+      nombre: file.name, entradaBytes: file.size,
+      exif, sof, sw, sh, dstW, dstH, maxBytes, pasos, q, iters,
+      blob,
+      tDecode: t1 - t0, tEscala: t2 - t1, tEncode: t3 - t2, tTotal: t3 - t0
+    };
+  } finally {
+    // escalar() puede lanzar entre cargarImagen() y la revocación de arriba, y en ese
+    // camino el object URL no se revocaría nunca. Con una tanda de archivos corruptos
+    // se van acumulando.
+    if (urlVivo) { URL.revokeObjectURL(url); img.src = ""; }
+  }
+}
+
+/* Cesión al event loop entre fotos, que §4 marca como no negociable.
+   Por qué setTimeout y no las alternativas:
+     · scheduler.yield() no existe en Safari de iOS, que es el navegador que importa.
+     · requestIdleCallback no garantiza ejecutarse mientras el hilo está ocupado, y
+       su soporte en WebKit llegó tarde.
+     · requestAnimationFrame se DETIENE por completo con la pestaña oculta. Ojo con
+       el argumento fácil, que es falso: setTimeout TAMBIÉN se estrangula en segundo
+       plano (Safari y Chrome lo llevan a ≥1 s por vuelta). La diferencia real es que
+       rAF deja la tanda colgada y setTimeout la termina, lenta — 30 fotos acaban en
+       ~30 s en vez de ~7. Que miren una notificación a media tanda no puede costar
+       la tanda entera.
+   Su único costo en primer plano es el clamp de 4 ms a partir del quinto
+   anidamiento: 30 fotos × 4 ms ≈ 120 ms contra ~6,000 ms de tanda. Si algún día
+   eso importara, el escape es MessageChannel: macrotarea sin clamp, y sí está en
+   Safari. */
+const ceder = () => new Promise(r => setTimeout(r, 0));
+
+async function correrCola(){
+  if (cola.corriendo) return;
+  cola.corriendo = true; cola.cancelado = false;
+  try {
+    // for...of lee la longitud viva del arreglo: si se eligen más fotos a media
+    // tanda, este mismo bucle las toma sin reiniciarse.
+    for (const item of cola.items) {
+      if (cola.cancelado) break;
+      if (item.estado !== ESTADO.PENDIENTE) continue;   // ya lista, o ya marcada con error
+      item.estado = ESTADO.PROCESANDO; pintarItem(item); pintarBarra();
+      try {
+        Object.assign(item, await procesar(item.file));
+        item.url    = URL.createObjectURL(item.blob);
+        item.aviso  = avisoBarras(item);
+        item.estado = ESTADO.LISTA;
+      } catch (err) {
+        // Un error en una foto no tumba la tanda: se marca esa y se sigue.
+        item.estado = ESTADO.ERROR;
+        item.error  = mensajeDeError(err, item.file);
+        console.error(err);
+      }
+      pintarItem(item); pintarBarra();
+      await ceder();
+    }
+  } finally { cola.corriendo = false; pintarBarra(); }
+
+  // Una sola foto en la tanda: se abre el detalle directo. Es el flujo de siempre,
+  // el verificado en el iPhone, y evita un toque extra en el caso más común.
+  if (cola.items.length === 1 && cola.items[0].estado === ESTADO.LISTA && detalleId === null)
+    abrirDetalle(cola.items[0].id);
+}
+
+/* correrCola() se llama SIEMPRE por aquí, nunca suelta. Su try/catch interno solo
+   cubre procesar(); un throw en pintarItem() o pintarBarra() escapa al finally y
+   moriría como unhandled rejection silenciosa, dejando la cola detenida y la
+   interfaz con el barrido puesto para siempre. */
+const arrancarCola = () => correrCola().catch(err => { console.error(err); pintarBarra(true); });
+
+function mensajeDeError(err, file){
+  /* HEIC no se pre-rechaza por tipo: Safari lo decodifica sin problema. Y en el
+     iPhone este caso no se dispara nunca —está medido: el selector transcodifica y
+     llega un IMG_1473.jpeg—, así que el único escenario vivo es escritorio, donde
+     quien está sentado es quien construye el marco. Por eso el mensaje dice lo
+     único cierto y accionable ahí, y no manda a Ajustes › Cámara del teléfono. */
+  const esHeic = /image\/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+  return esHeic
+    ? "Este navegador no abre fotos en formato HEIC. Desde el iPhone sí funciona."
+    : "No se pudo preparar esta foto: " + err.message;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -390,42 +598,22 @@ function veredictoOrientacion(r){
   return { texto: `EXIF = ${r.exif}, el navegador SÍ rotó${reflejo}`, clase: "ok" };
 }
 
-function mostrar(r){
-  const stage = $("stage");
-  stage.classList.remove("empty");
-  stage.innerHTML = "";
-  const prev = new Image();
-  if (urlPreview) URL.revokeObjectURL(urlPreview);   // el de la foto anterior
-  urlPreview = URL.createObjectURL(r.blob);
-  prev.src = urlPreview;
-  prev.alt = "Vista previa de cómo se verá en el marco";
-  stage.appendChild(prev);
-
-  /* Aviso de barras, evaluado POR EJE. Dispara con cualquiera de los dos y el texto
-     tiene que nombrar el correcto: una captura de pantalla de celular (19.5:9, p.ej.
-     1179×2556) sale en 221×480 y deja 31 % del ancho en negro — barras a los LADOS,
-     y la foto no es horizontal. Un texto único mentiría en ese caso, que es frecuente. */
+/* Aviso de franjas, evaluado POR EJE. Dispara con cualquiera de los dos y el texto
+   tiene que nombrar el correcto: una captura de pantalla de celular (19.5:9, p.ej.
+   1179×2556) sale en 221×480 y deja 31 % del ancho en negro — franjas a los LADOS,
+   y la foto no es horizontal. Un texto único mentiría en ese caso, que es frecuente.
+   Se calcula al preparar, no al pintar: la rejilla lo necesita para el resumen. */
+function avisoBarras(r){
   const bx = (CFG.TARGET_W - r.dstW) / 2;
   const by = (CFG.TARGET_H - r.dstH) / 2;
-  const aviso = $("aviso");
-  if (by * 2 / CFG.TARGET_H > CFG.AVISO_BARRAS) {
-    aviso.textContent = "Esta foto es horizontal y el marco está vertical: se verá al centro, con negro arriba y abajo.";
-    aviso.hidden = false;
-  } else if (bx * 2 / CFG.TARGET_W > CFG.AVISO_BARRAS) {
-    aviso.textContent = "Esta foto es más alargada que el marco: se verá al centro, con negro a los lados.";
-    aviso.hidden = false;
-  } else {
-    aviso.hidden = true;
-  }
+  if (by * 2 / CFG.TARGET_H > CFG.AVISO_BARRAS)
+    return "Esta foto es horizontal y el marco está vertical: se verá al centro, con negro arriba y abajo.";
+  if (bx * 2 / CFG.TARGET_W > CFG.AVISO_BARRAS)
+    return "Esta foto es más alargada que el marco: se verá al centro, con negro a los lados.";
+  return null;
+}
 
-  // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
-  $("caption").textContent = CFG.DIAG
-    ? `${r.dstW} × ${r.dstH} px · ${kb(r.blob.size)}`
-    : "Lista para subir";
-
-  if (!CFG.DIAG) return;
-  $("diagCard").hidden = false;
-
+function filasDiag(r){
   const v = veredictoOrientacion(r);
 
   /* Tres estados, atados al contrato HTTP: por encima del presupuesto es un
@@ -434,7 +622,7 @@ function mostrar(r){
   const clasePeso = r.blob.size <= r.maxBytes   ? "ok"
                   : r.blob.size <= TOPE_FIRMWARE ? "warn" : "err";
 
-  const filas = [
+  return [
     ["archivo", r.nombre],
     ["entrada", `${r.sw} × ${r.sh} · ${kb(r.entradaBytes)}`],
     ["codificado en el JPEG", r.sof ? `${r.sof.w} × ${r.sof.h}` : "—"],
@@ -449,57 +637,272 @@ function mostrar(r){
     ["comprimir", ms(r.tEncode)],
     ["total", "<b>" + ms(r.tTotal) + "</b>"]
   ];
-  $("diag").innerHTML = filas.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+}
+
+/* ── Rejilla ──────────────────────────────────────────────────────────────── */
+
+/* Añade los mosaicos que falten; no toca los que ya están, para no volver a
+   decodificar sus miniaturas. */
+function crearRejilla(){
+  const cont = $("rejilla");
+  for (const item of cola.items) {
+    if (document.getElementById("m" + item.id)) continue;
+    const el = document.createElement("button");
+    el.type = "button";
+    el.id = "m" + item.id;
+    el.className = "mosaico pend";
+    el.addEventListener("click", () => abrirDetalle(item.id));
+    cont.appendChild(el);
+    pintarItem(item);
+  }
+}
+
+function pintarItem(item){
+  const el = document.getElementById("m" + item.id);
+  if (!el) return;
+  const n = cola.items.indexOf(item) + 1;
+  const num = `<span class="num">${n}</span>`;
+
+  if (item.estado === ESTADO.LISTA) {
+    el.className = "mosaico lista";
+    el.innerHTML =
+      `<img src="${item.url}" alt="" loading="lazy" decoding="async">` + num +
+      (item.aviso ? `<span class="marca">franjas</span>` : "");
+    el.setAttribute("aria-label", `Foto ${n}, lista. Tócala para verla en grande.`);
+  } else if (item.estado === ESTADO.ERROR) {
+    el.className = "mosaico err";
+    el.innerHTML = `<span class="fallo">No se pudo</span>` + num;
+    el.setAttribute("aria-label", `Foto ${n}: no se pudo preparar. Tócala para saber por qué.`);
+  } else {
+    el.className = "mosaico " + (item.estado === ESTADO.PROCESANDO ? "proc" : "pend");
+    el.innerHTML = num;
+    el.setAttribute("aria-label", `Foto ${n}, en espera.`);
+  }
+}
+
+function pintarBarra(interrumpida){
+  const n = cola.items.length;
+  $("cardVacia").hidden   = n > 0;
+  $("cardTanda").hidden   = n === 0;
+  $("cardAcciones").hidden = n === 0;
+  $("lblPick").textContent = n ? "Agregar más fotos" : "Elegir fotos";
+  if (!n) return;
+
+  const listas = cuenta(ESTADO.LISTA);
+  const errores = cuenta(ESTADO.ERROR);
+  const pendientes = cuenta(ESTADO.PENDIENTE);
+  const btn = $("btnCola");
+
+  let texto;
+  if (cola.corriendo) {
+    // Mientras corre, solo el progreso. El recuento de fallos se guarda para el
+    // final: cada mosaico que falla ya se marca en el acto, y meterlo aquí alarga
+    // la línea a dos renglones a mitad de tanda.
+    texto = `Preparando ${listas + errores + 1} de ${n}…`;
+    btn.textContent = "Cancelar"; btn.hidden = false;
+  } else if (pendientes) {
+    texto = interrumpida
+      ? `Se interrumpió la preparación. Faltan ${pendientes}.`
+      : `${listas} ${listas === 1 ? "lista" : "listas"} · faltan ${pendientes}`;
+    btn.textContent = "Continuar"; btn.hidden = false;
+  } else {
+    texto = listas === 1 ? "1 foto lista" : `${listas} fotos listas`;
+    btn.hidden = true;
+  }
+  if (errores && !cola.corriendo)
+    texto += ` · ${errores} no se ${errores === 1 ? "pudo" : "pudieron"} preparar`;
+  $("estadoTanda").textContent = texto;
+
+  // Limpiar es destructivo; durante la tanda el botón que toca es Cancelar.
+  $("btnLimpiar").disabled = cola.corriendo;
+
+  // Aviso de franjas agregado, visible en producción. El texto completo, por eje,
+  // vive en el detalle de cada foto.
+  // Solo al terminar: a media tanda el denominador son las que ya se prepararon, y
+  // un «3 de 3» que un segundo después dice «3 de 15» no informa, marea.
+  const conFranjas = cola.items.filter(i => i.estado === ESTADO.LISTA && i.aviso).length;
+  const af = $("avisoFranjas");
+  af.hidden = !conFranjas || cola.corriendo;
+  if (!af.hidden) {
+    af.textContent = conFranjas === 1
+      ? "Una foto se verá con franjas negras. Tócala para ver cómo queda."
+      : `${conFranjas} de ${listas} fotos se verán con franjas negras. Tócalas para ver cómo quedan.`;
+  }
+
+  $("hintTanda").textContent = CFG.ENDPOINT
+    ? "Se suben de una en una, en el orden de la rejilla."
+    : "Toca una foto para verla en grande o guardarla.";
+
+  // Resumen de tanda: solo diagnóstico.
+  const res = $("resumenTanda");
+  res.hidden = !(CFG.DIAG && listas);
+  if (!res.hidden) {
+    const l = cola.items.filter(i => i.estado === ESTADO.LISTA);
+    const peso = l.reduce((s, i) => s + i.blob.size, 0);
+    const t = l.reduce((s, i) => s + i.tTotal, 0);
+    res.textContent = `${listas} fotos · ${kb(peso)} · ${ms(t)} en total · ${ms(t / listas)} por foto`;
+  }
+}
+
+/* ── Detalle ──────────────────────────────────────────────────────────────── */
+let detalleId = null;
+let historiaEmpujada = false;
+
+function abrirDetalle(id){
+  const item = cola.items.find(i => i.id === id);
+  if (!item) return;
+  if (item.estado !== ESTADO.LISTA && item.estado !== ESTADO.ERROR) return;  // todavía no hay nada que ver
+
+  detalleId = id;
+  pintarDetalle(item);
+  $("vistaRejilla").hidden = true;
+  $("vistaDetalle").hidden = false;
+  window.scrollTo(0, 0);
+
+  /* El botón atrás del teléfono debe cerrar el detalle, no salir de la página.
+     SIEMPRE con la MISMA URL, jamás con una ruta nueva. En producción esta página la
+     sirve el ESP32, cuyo contrato tiene exactamente cinco rutas —/, /list, /photo,
+     /upload, /delete— sin catch-all ni fallback a index: un /foto/3 daría 404 del
+     AsyncWebServer en cuanto alguien recargue o comparta el enlace, o sea pantalla
+     en blanco y sin explicación, en un objeto sin manual.
+
+     Y es una trampa que no se cae sola. Medido en Chrome:
+
+                              file://          http://
+       location.href          aceptado         aceptado
+       "#foto3"               aceptado         aceptado
+       "/foto/3"              SecurityError    ACEPTADO   ← el 404 llega después
+
+     O sea que sobre http —escritorio, la LAN, cualquier prueba— una ruta nueva pasa
+     sin quejarse y el problema solo aparece en el marco. Que file:// la rechace es
+     coincidencia del origen "null", no una red de seguridad.
+     Si algún día hiciera falta estado en la URL, va en el fragmento: no viaja al
+     servidor. El try/catch se queda porque Safari todavía no está medido. */
+  historiaEmpujada = false;
+  try { history.pushState({ detalle: id }, "", location.href); historiaEmpujada = true; }
+  catch { /* sin historial; el botón «Volver» sigue funcionando */ }
+}
+
+function cerrarDetalle(porHistoria){
+  if (detalleId === null) return;
+  detalleId = null;
+  $("vistaDetalle").hidden = true;
+  $("vistaRejilla").hidden = false;
+  if (!porHistoria && historiaEmpujada) history.back();
+  historiaEmpujada = false;
+}
+
+window.addEventListener("popstate", () => cerrarDetalle(true));
+
+function pintarDetalle(item){
+  const stage = $("stage");
+  stage.innerHTML = "";
+
+  if (item.estado === ESTADO.ERROR) {
+    stage.className = "stage empty";
+    stage.textContent = "No se pudo preparar esta foto";
+    $("caption").textContent = item.error;
+    $("aviso").hidden = true;
+    $("diagCard").hidden = true;
+    $("btnDownload").disabled = true;
+    return;
+  }
+
+  stage.className = "stage";
+  const prev = new Image();
+  prev.src = item.url;
+  prev.alt = "Vista previa de cómo se verá en el marco";
+  stage.appendChild(prev);
+
+  const aviso = $("aviso");
+  aviso.hidden = !item.aviso;
+  if (item.aviso) aviso.textContent = item.aviso;
+
+  // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
+  $("caption").textContent = CFG.DIAG
+    ? `${item.dstW} × ${item.dstH} px · ${kb(item.blob.size)}`
+    : "Lista para subir";
+
+  $("btnDownload").disabled = false;
+
+  $("diagCard").hidden = !CFG.DIAG;
+  if (CFG.DIAG)
+    $("diag").innerHTML = filasDiag(item).map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
 }
 
 /* ─────────────────────────────────────────────────────────────
    7. EVENTOS
    ───────────────────────────────────────────────────────────── */
-/* Etapa 5: cuando exista CFG.ENDPOINT, el botón de subir se muestra y se conecta.
-   Mientras tanto no se pinta. Un botón primario deshabilitado para siempre se ve a
-   proyecto y no a producto; sin él, «Guardar JPEG» deja de ser un consuelo y pasa a
-   ser LA acción de este modo. */
+/* Etapa 5: cuando exista CFG.ENDPOINT, los botones de subir se muestran y se
+   conectan. Mientras tanto no se pintan. Un botón primario deshabilitado para
+   siempre se ve a proyecto y no a producto; sin él, «Guardar JPEG» deja de ser un
+   consuelo y pasa a ser LA acción de este modo. */
 if (!CFG.ENDPOINT) {
   $("btnUpload").hidden = true;
+  $("btnSubirTanda").hidden = true;
   $("hint").textContent = "«Guardar JPEG» descarga el archivo exacto que se subiría al marco, para revisarlo en la computadora.";
 }
 
-/* TODO etapa 3 (rejilla y cola): el input no lleva `multiple` y aquí solo se procesa
-   files[0]. La multi-selección arrastra el procesamiento secuencial cediendo al event
-   loop entre fotos y la concurrencia de subida = 1, que la §4 marca como no
-   negociables. No entra hasta que exista la rejilla. */
-$("file").addEventListener("change", async e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  $("btnDownload").disabled = true;
-  $("aviso").hidden = true;
-  // Alcanza a pintarse: procesar() abre con `await file.arrayBuffer()`, una tarea
-  // asíncrona real, así que el hilo queda libre antes de cualquier trabajo pesado.
-  $("caption").textContent = "Preparando…";
-  try {
-    resultado = await procesar(file);
-    mostrar(resultado);
-    $("btnDownload").disabled = false;
-  } catch (err) {
-    /* HEIC no se pre-rechaza por tipo: Safari lo decodifica sin problema y Safari es
-       el navegador que importa aquí. El flag solo sirve para dar un mensaje que se
-       entienda cuando la decodificación efectivamente falló. */
-    const esHeic = /image\/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
-    $("caption").textContent = esHeic
-      ? "Esta foto está en formato HEIC y este navegador no lo abre. Desde el iPhone sí funciona. En la computadora, en Ajustes › Cámara › Formatos elige «Más compatible» y vuelve a mandarla."
-      : "No se pudo preparar esa foto: " + err.message;
-    console.error(err);
-  }
+function avisarTope(pedidas, aceptadas){
+  const el = $("avisoTope");
+  el.hidden = false;
+  el.textContent = aceptadas
+    ? `Caben ${CFG.MAX_TANDA} fotos por tanda. Se agregaron ${aceptadas}; sube estas y vuelve por las demás.`
+    : `Ya hay ${CFG.MAX_TANDA} fotos, que es el máximo por tanda. Súbelas y vuelve por las demás.`;
+}
+
+function limpiarTanda(){
+  cerrarDetalle();
+  // Primero fuera del DOM y después revocar: revocar con los <img> todavía montados
+  // deja miniaturas rotas en Safari.
+  $("rejilla").innerHTML = "";
+  for (const item of cola.items) if (item.url) URL.revokeObjectURL(item.url);
+  cola.items = [];
+  $("avisoTope").hidden = true;
+  pintarBarra();
+}
+
+$("file").addEventListener("change", e => {
+  const elegidas = [...e.target.files];
+  e.target.value = "";                     // sin esto, reelegir el MISMO archivo no dispara change
+  if (!elegidas.length) return;
+  $("avisoTope").hidden = true;
+  cerrarDetalle();
+
+  /* Anexar, NUNCA reemplazar. Abrir el selector no puede destruir fotos ya
+     preparadas: nadie va a intuir que ese gesto es destructivo, y con la capa de
+     subida encima serían fotos ya listas para subir. Lo único que vacía la tanda es
+     el botón «Limpiar», que sí es explícito. Anexar al final además preserva
+     «orden de selección = orden de subida = orden del manifiesto». */
+  const hueco  = Math.max(0, CFG.MAX_TANDA - cola.items.length);
+  const nuevas = elegidas.slice(0, hueco);
+  if (nuevas.length < elegidas.length) avisarTope(elegidas.length, nuevas.length);
+  if (!nuevas.length) return;
+
+  cola.items.push(...nuevas.map(nuevoItem));
+  crearRejilla();
+  arrancarCola();                          // los `continue` saltan lo ya preparado
 });
 
+$("btnCola").addEventListener("click", () => {
+  if (cola.corriendo) { cola.cancelado = true; return; }   // corta al terminar la foto en curso
+  arrancarCola();
+});
+
+$("btnLimpiar").addEventListener("click", limpiarTanda);
+$("btnVolver").addEventListener("click", () => cerrarDetalle());
+
 $("btnDownload").addEventListener("click", () => {
-  if (!resultado) return;
+  const item = cola.items.find(i => i.id === detalleId);
+  if (!item || !item.blob) return;
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(resultado.blob);
-  a.download = resultado.nombre.replace(/\.[^.]+$/, "") + `_${resultado.dstW}x${resultado.dstH}.jpg`;
+  a.href = URL.createObjectURL(item.blob);
+  a.download = item.nombre.replace(/\.[^.]+$/, "") + `_${item.dstW}x${item.dstH}.jpg`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
+
+pintarBarra();
 </script>
 </body>
 </html>

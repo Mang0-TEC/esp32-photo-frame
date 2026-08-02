@@ -273,6 +273,8 @@ build_flags =
     ; USE_HSPI_PORT deliberadamente ausente
 ```
 
+**`TFT_WIDTH=320` y `TFT_HEIGHT=480` son las dimensiones físicas del panel y no dependen de cómo se monte el marco.** No se tocan al cambiar la orientación. Lo que fija la orientación es `tft.setRotation(0)` en el firmware, y ese es justamente el valor nativo del ST7796S: montado vertical, el driver no aplica ninguna transformación de coordenadas. Ver §6 de la especificación funcional.
+
 **`USER_SETUP_LOADED=1` es la clave.** Le dice a TFT_eSPI que no lea `User_Setup.h`. Sin eso, la configuración vive dentro de la carpeta de la librería y se pierde en cada actualización o al clonar el repo en otra máquina — el dolor clásico de esta librería.
 
 **`USE_HSPI_PORT` no debe definirse.** TFT_eSPI usa VSPI por defecto, que es lo que se quiere; el HSPI se asigna a la SD manualmente.
@@ -301,7 +303,7 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 El callback de upload de `ESPAsyncWebServer` **no corre en `loop()`**: corre en el hilo `async_tcp`, a prioridad 10 y con 16384 B de stack. Bloquearlo con I/O de tarjeta SD —una escritura puede tardar decenas de milisegundos cuando el bloque necesita borrado previo— provoca watchdog y conexiones caídas. Y está en la única ruta por la que entran fotos al marco.
 
-El patrón correcto, aprovechando que los archivos son de ~25 KB:
+El patrón correcto, aprovechando que los archivos llegan a 32 KB en el peor caso:
 
 - Acumular los chunks en un buffer de heap.
 - Escribir a la SD **una sola vez**, cuando `final == true`.
@@ -321,28 +323,48 @@ Detalle de los endpoints y sus códigos de respuesta en §4 de la especificació
 |---|---|
 | Controlador | ST7796S |
 | Panel | TFT **IPS** |
-| Resolución | 320×480 nativo (2:3) — se monta horizontal, 480×320 (3:2) |
+| Resolución | 320×480 nativo (2:3) — **se monta vertical**, que es la orientación nativa del panel |
 | Voltaje | 3.3 / 5 VDC |
 | Área de pantalla | 74.5 × 50 mm |
 | PCB | 94.8 × 59.19 mm |
 | Peso | 41 g |
 | Pines | 9, **sin soldar** |
 
-> **Para el diseño de la carcasa:** el PCB sobresale ~20 mm respecto al área visible, y de forma asimétrica. Ahí es donde el bisel tiene que trabajar.
+> **Para el diseño de la carcasa:** montado vertical, el área activa mide **50 mm de ancho × 74.5 mm de alto**. El PCB sobresale ~20 mm respecto al área visible, y de forma asimétrica, sobre el eje vertical. Ahí es donde el bisel tiene que trabajar.
 
-> **Relación de aspecto:** 480×320 es exactamente 3:2. Fotos de cámara réflex/mirrorless encajan con recorte cero. Fotos de celular (4:3 o 16:9) requieren recorte o barras.
+> **Relación de aspecto:** montado vertical, 320×480 es exactamente **2:3**. La lógica se invierte respecto del montaje horizontal que se contemplaba antes: ahora las **verticales de celular (3:4) casi llenan la pantalla** —salen en 320×427, con 11 % del alto en negro—, y son las **horizontales las que quedan a la mitad**: una 4:3 sale en 320×240, con 50 % del alto en negro. Una vertical 2:3 de réflex encaja con recorte cero; una horizontal 3:2 de réflex es ahora el peor caso, con 56 %. Justificación completa en §6 de la especificación funcional.
 
 ### Capacidad de la SD de 8 GB
 
-~7.4 GiB utilizables tras formatear FAT32. Estimación de cuántas fotos caben, según el peso que acabe teniendo cada una:
+~7.4 GiB utilizables tras formatear FAT32, o sea **7,945,689,498 B** — esa es la base de la tabla, que antes no estaba escrita y no cuadraba con los números.
 
 | Peso por foto | Fotos que caben |
 |---|---|
-| 25 KB | ~304,000 |
-| 40 KB | ~190,000 |
-| 60 KB | ~126,000 |
+| 25 KB | ~310,000 |
+| **32 KB** (el peor caso real, ver abajo) | **~242,000** |
+| 40 KB | ~194,000 |
+| 60 KB | ~129,000 |
 
-> Esta tabla es **estimación de capacidad**, no un ajuste ofrecido a quien sube fotos. El peso lo decide el firmware de la página (presupuesto de 0.167 B/píxel, ver §4 de la especificación funcional); quien usa el marco nunca elige una calidad. Pedirle esa decisión violaría la regla 1.
+> Esta tabla es **estimación de capacidad**, no un ajuste ofrecido a quien sube fotos. El peso lo decide el firmware de la página (presupuesto de 0.213 B/píxel, ver §4 de la especificación funcional); quien usa el marco nunca elige una calidad. Pedirle esa decisión violaría la regla 1.
+
+### El cluster de 32 KB, que es donde está lo interesante
+
+Una SDHC de 8 GB formateada según la especificación SD usa **clusters de 32 KB**, y el presupuesto de 32,768 B de §4 coincide **exactamente** con uno. No es una coincidencia aprovechada por accidente: una foto dentro de presupuesto ocupa un cluster y ni un byte más.
+
+El borde importa. Una foto que **tope la cota de calidad** y salga en 33 KB consume **dos clusters, 64 KB — el doble**. Con 242,000 fotos de capacidad no es un problema de espacio, pero es la razón por la que el panel de diagnóstico de la página marca en ámbar las fotos por encima del presupuesto: no es decoración, marca el cruce de esa frontera.
+
+Consecuencia para la tabla de arriba, que mide presupuesto y no ocupación real:
+
+| Peso por foto | En disco | Fotos que caben de verdad |
+|---|---|---|
+| 25 KB | 32 KB (1 cluster) | ~242,000 |
+| 32 KB | 32 KB (1 cluster) | ~242,000 |
+| 40 KB | 64 KB (2 clusters) | ~121,000 |
+| 60 KB | 64 KB (2 clusters) | ~121,000 |
+
+Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
+
+**Verificar al preparar la tarjeta.** 32 KB es lo que trae de fábrica y lo que produce el SD Card Formatter oficial, pero macOS puede elegir otro tamaño al reformatear. Se confirma con `diskutil info /dev/diskNs1`, campo de tamaño de asignación.
 
 La capacidad dejó de ser una restricción del proyecto.
 

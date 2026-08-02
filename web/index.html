@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marco de Fotos — preparar imagen</title>
+<style>
+  :root{
+    --bg:#eceef0;
+    --panel:#ffffff;
+    --ink:#16181b;
+    --ink-soft:#5b6168;
+    --line:#cfd4d9;
+    --accent:#1f5fbf;
+    --ok:#186a3b;
+    --warn:#8a5a00;
+    --err:#9b1c1c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    padding:16px;
+    max-width:560px;
+    margin:0 auto;
+  }
+  h1{font-size:19px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--ink-soft);font-size:13px;margin:0 0 18px}
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:14px;
+    margin-bottom:14px;
+  }
+
+  /* El input real se oculta; la etiqueta es el control visible. */
+  input[type=file]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+  .pick{
+    display:block;text-align:center;
+    background:var(--accent);color:#fff;
+    padding:16px;border-radius:8px;
+    font-weight:600;cursor:pointer;
+  }
+  input[type=file]:focus-visible + .pick{outline:3px solid var(--ink);outline-offset:2px}
+
+  .stage{
+    background:#000;
+    border-radius:6px;
+    width:320px;              /* la pantalla real, 1:1 */
+    max-width:100%;
+    margin:0 auto;
+    aspect-ratio:320/480;
+    overflow:hidden;
+  }
+  .stage img{
+    display:block;
+    width:100%;
+    height:100%;
+    object-fit:contain;       /* pillarbox: exactamente lo que hará el firmware */
+  }
+  .stage.empty{color:#6b7178;font-size:13px;background:#1a1c1f}
+
+  .caption{font-size:12px;color:var(--ink-soft);margin-top:8px;text-align:center}
+  /* Aviso en lenguaje llano, visible también en producción: es la única pista de
+     que una foto va a salir con mucha barra. No entra en el panel de diagnóstico. */
+  .aviso{
+    font-size:13px;line-height:1.4;color:var(--warn);
+    background:#fdf6e6;border:1px solid #e8d5a3;border-radius:6px;
+    padding:9px 11px;margin:10px 0 0;
+  }
+
+  table.diag{width:100%;border-collapse:collapse;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  table.diag th{text-align:left;font-weight:400;color:var(--ink-soft);padding:3px 0;width:47%}
+  table.diag td{text-align:right;padding:3px 0;font-variant-numeric:tabular-nums}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+
+  .actions{display:flex;gap:10px}
+  button{
+    flex:1;padding:13px;border-radius:8px;border:1px solid var(--line);
+    background:#fff;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;
+  }
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.45;cursor:default}
+
+  .hint{font-size:12.5px;color:var(--ink-soft);margin:10px 0 0}
+  code{font:12px ui-monospace,Menlo,Consolas,monospace;background:#e3e6e9;padding:1px 4px;border-radius:3px}
+</style>
+</head>
+<body>
+
+<h1>Marco de fotos</h1>
+<p class="sub">Prepara la imagen antes de subirla. Todo ocurre en este teléfono; no se envía nada todavía.</p>
+
+<div class="card">
+  <input type="file" id="file" accept="image/*">
+  <label class="pick" for="file">Elegir una foto</label>
+</div>
+
+<div class="card">
+  <div class="stage empty" id="stage">Aquí verás cómo va a quedar en la pantalla</div>
+  <p class="caption" id="caption">320 × 480 · así se ve el marco</p>
+  <p class="aviso" id="aviso" hidden></p>
+</div>
+
+<div class="card" id="diagCard" hidden>
+  <table class="diag" id="diag"></table>
+</div>
+
+<div class="card">
+  <div class="actions">
+    <button id="btnDownload" disabled>Guardar JPEG</button>
+    <button id="btnUpload" class="primary" disabled>Subir al marco</button>
+  </div>
+  <p class="hint" id="hint">Sin marco conectado, «Guardar JPEG» descarga el archivo que se subiría, para revisarlo en la computadora.</p>
+</div>
+
+<script>
+"use strict";
+
+/* ─────────────────────────────────────────────────────────────
+   CONFIGURACIÓN
+   ───────────────────────────────────────────────────────────── */
+const CFG = {
+  TARGET_W: 320,          // ← ST7796S en su orientación nativa, tft.setRotation(0)
+  TARGET_H: 480,
+
+  /* Presupuesto de bytes PROPORCIONAL a los píxeles de salida, no un tamaño plano.
+     32,768 B ÷ (320×480) = 0.2133 B/px. Llenar la pantalla cuesta 32 KB, que además
+     es exactamente un cluster de la SD; una foto con barras gasta menos, en
+     proporción a lo que realmente ocupa. Con un tope plano, una horizontal de
+     320×240 saldría al doble de densidad que una que llena la pantalla — bytes
+     gastados en una diferencia que nadie va a ver. Ver §4 de la especificación. */
+  BYTES_PER_PX: 32768 / (320 * 480),
+  BANDA: 0.88,            // se corta la búsqueda al llegar al 88 % del objetivo
+
+  /* Rango de calidad acotado a propósito. Si la búsqueda topa una cota se acepta
+     ese resultado: un paisaje con follaje que a 0.62 sigue pesando de más se sube
+     de más, en vez de destruirlo. Bajar de 0.62 arruina la foto para ahorrar KB
+     que la tarjeta no necesita. */
+  Q_MIN: 0.62,
+  Q_MAX: 0.92,
+  Q_STEPS: 6,             // pasos de búsqueda binaria de calidad
+
+  AVISO_BARRAS: 0.20,     // fracción de un eje a partir de la cual se avisa
+  DIAG: true,             // panel de diagnóstico: false para producción
+  ENDPOINT: null          // etapa 5: "/upload". null → el botón de subir no existe
+};
+
+const TOPE_FIRMWARE = 64 * 1024;   // el callback de upload responde 413 por encima
+
+const $ = id => document.getElementById(id);
+let resultado = null;     // { blob, canvas, nombre }
+let urlPreview = null;    // object URL de la vista previa en curso, para revocarlo
+
+/* ─────────────────────────────────────────────────────────────
+   1. LECTURA DEL EXIF — solo el tag Orientation (0x0112)
+   Sirve para verificar empíricamente si el navegador ya rotó
+   la imagen por su cuenta. No rota nada; solo reporta.
+   ───────────────────────────────────────────────────────────── */
+/* Ambos parsers caminan bytes de un archivo que puede venir truncado o no ser un
+   JPEG. Cualquier lectura fuera de rango lanza RangeError desde el DataView, y esa
+   excepción terminaría como texto en la pantalla de quien sube la foto («Offset is
+   outside the bounds of the DataView»). El try/catch la convierte en null, que ya
+   es el valor documentado de «no se pudo determinar»: el pipeline sigue, porque
+   ninguno de los dos datos es necesario para escalar. */
+function leerExifOrientation(buf){
+ try {
+  const dv = new DataView(buf);
+  if (dv.byteLength < 4 || dv.getUint16(0) !== 0xFFD8) return null;   // no es JPEG
+  let off = 2;
+  while (off < dv.byteLength - 1) {
+    if (dv.getUint8(off) !== 0xFF) return null;      // desincronizado
+    const marker = dv.getUint8(off + 1);
+    if (marker === 0xD8 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { off += 2; continue; }
+    if (marker === 0xDA || marker === 0xD9) return null;  // empezó la imagen o terminó
+    const len = dv.getUint16(off + 2);
+    if (len < 2) return null;                        // longitud imposible, archivo roto
+    if (marker === 0xE1) {                           // APP1
+      const base = off + 4;
+      if (dv.getUint32(base) === 0x45786966) {       // "Exif"
+        const tiff = base + 6;
+        const le = dv.getUint16(tiff) === 0x4949;    // 'II' = little endian
+        const ifd0 = tiff + dv.getUint32(tiff + 4, le);
+        const n = dv.getUint16(ifd0, le);
+        for (let i = 0; i < n; i++) {
+          const e = ifd0 + 2 + i * 12;
+          if (dv.getUint16(e, le) === 0x0112) return dv.getUint16(e + 8, le);
+        }
+        return 1;                                    // hay EXIF pero sin el tag
+      }
+    }
+    off += 2 + len;
+  }
+  return null;
+ } catch { return null; }
+}
+
+/* Dimensiones tal como están CODIFICADAS en el JPEG (marcador SOF),
+   sin aplicar rotación. Comparadas contra naturalWidth/Height del
+   <img>, dicen si el navegador aplicó el EXIF o no. */
+function leerDimensionesSOF(buf){
+ try {
+  const dv = new DataView(buf);
+  if (dv.byteLength < 4 || dv.getUint16(0) !== 0xFFD8) return null;
+  let off = 2;
+  while (off < dv.byteLength - 1) {
+    if (dv.getUint8(off) !== 0xFF) return null;
+    const m = dv.getUint8(off + 1);
+    if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { off += 2; continue; }
+    // SOF0..SOF15, excluyendo DHT(C4), JPG(C8) y DAC(CC)
+    if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+      return { w: dv.getUint16(off + 7), h: dv.getUint16(off + 5) };
+    }
+    if (m === 0xDA || m === 0xD9) return null;
+    const len = dv.getUint16(off + 2);
+    if (len < 2) return null;
+    off += 2 + len;
+  }
+  return null;
+ } catch { return null; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   2. DECODIFICACIÓN
+   Se usa <img> a propósito, NO createImageBitmap(): el <img>
+   aplica la orientación EXIF solo en todos los navegadores
+   modernos. createImageBitmap la ignora salvo que reciba
+   imageOrientation:'from-image', cuyo soporte en Safari iOS
+   está sin verificar.
+   ───────────────────────────────────────────────────────────── */
+function cargarImagen(file){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload  = () => resolve({ img, url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo leer la imagen")); };
+    img.src = url;
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────
+   3. ESCALADO POR HALVING PROGRESIVO
+   Recibe un rectángulo fuente (sx,sy,sw,sh) para que el recorte
+   manual —etapa siguiente— entre por aquí sin reescribir nada:
+   el recorte se aplica sobre el ORIGINAL y el escalado va de esa
+   región al destino, sin perder resolución intermedia.
+   Nunca se crea un canvas del tamaño original: el primer paso ya
+   sale a la mitad. Importa en un celular con fotos de 12 MP.
+   ───────────────────────────────────────────────────────────── */
+function escalar(imagen, sx, sy, sw, sh, dstW, dstH){
+  let a = document.createElement("canvas");
+  let b = document.createElement("canvas");
+  let src = imagen, cx = sx, cy = sy, cw = sw, ch = sh;
+  let pasos = 0;
+
+  while (Math.round(cw / 2) >= dstW && Math.round(ch / 2) >= dstH) {
+    const nw = Math.max(1, Math.round(cw / 2));
+    const nh = Math.max(1, Math.round(ch / 2));
+    a.width = nw; a.height = nh;
+    const ctx = a.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, cx, cy, cw, ch, 0, 0, nw, nh);
+    src = a; cx = 0; cy = 0; cw = nw; ch = nh;
+    [a, b] = [b, a];                 // ping-pong: nunca se lee y escribe el mismo canvas
+    pasos++;
+  }
+
+  const out = document.createElement("canvas");
+  out.width = dstW; out.height = dstH;
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.imageSmoothingQuality = "high";
+  octx.drawImage(src, cx, cy, cw, ch, 0, 0, dstW, dstH);
+  // Liberar los tres canvas de trabajo, DESPUÉS del drawImage de arriba: hasta esa
+  // línea `src` sigue siendo la fuente y ponerle width = 0 lo dejaría en blanco.
+  // El guard de `imagen` es porque sin ningún paso de halving `src` es el <img>.
+  if (a !== src) { a.width = a.height = 0; }
+  if (b !== src) { b.width = b.height = 0; }
+  if (src !== imagen) { src.width = src.height = 0; }
+  return { canvas: out, pasos };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   4. ENCODE AL PRESUPUESTO — búsqueda binaria de la calidad
+   El objetivo llega calculado por foto (píxeles de salida × BYTES_PER_PX),
+   no es una constante: una foto con barras ocupa menos pantalla y por lo
+   tanto merece menos bytes.
+   ───────────────────────────────────────────────────────────── */
+const aBlob = (canvas, q) => new Promise(r => canvas.toBlob(r, "image/jpeg", q));
+
+async function encodeAlObjetivo(canvas, maxBytes){
+  const min = maxBytes * CFG.BANDA;            // banda de aceptación
+  let alto = await aBlob(canvas, CFG.Q_MAX);
+  if (alto.size <= maxBytes) return { blob: alto, q: CFG.Q_MAX, iters: 1 };
+
+  let lo = CFG.Q_MIN, hi = CFG.Q_MAX;
+  let mejor = null, mejorQ = null, iters = 1;
+  for (let i = 0; i < CFG.Q_STEPS; i++) {
+    const q = (lo + hi) / 2;
+    const blob = await aBlob(canvas, q);
+    iters++;
+    if (blob.size <= maxBytes) {
+      mejor = blob; mejorQ = q; lo = q;
+      if (blob.size >= min) break;             // ya está lo bastante cerca del techo
+    } else { hi = q; }
+  }
+  // Nada cupo ni siquiera cerca de la cota inferior: se acepta a Q_MIN por encima
+  // del presupuesto. Es deliberado — bajar más destruiría la foto para ahorrar
+  // bytes que la tarjeta no necesita. Sale marcado en ámbar en el diagnóstico.
+  if (!mejor) { mejor = await aBlob(canvas, CFG.Q_MIN); mejorQ = CFG.Q_MIN; iters++; }
+  return { blob: mejor, q: mejorQ, iters };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   5. PIPELINE
+   ───────────────────────────────────────────────────────────── */
+async function procesar(file){
+  const t0 = performance.now();
+  const buf = await file.arrayBuffer();
+  const exif = leerExifOrientation(buf);
+  const sof  = leerDimensionesSOF(buf);
+
+  const { img, url } = await cargarImagen(file);
+  const sw = img.naturalWidth, sh = img.naturalHeight;
+
+  // Contain: cabe dentro de 320×480 respetando proporción, sin ampliar.
+  const escala = Math.min(CFG.TARGET_W / sw, CFG.TARGET_H / sh, 1);
+  const dstW = Math.max(1, Math.round(sw * escala));
+  const dstH = Math.max(1, Math.round(sh * escala));
+
+  // El presupuesto sale de los píxeles que esta foto va a ocupar de pantalla.
+  const maxBytes = Math.round(dstW * dstH * CFG.BYTES_PER_PX);
+
+  const t1 = performance.now();
+  const { canvas, pasos } = escalar(img, 0, 0, sw, sh, dstW, dstH);
+  const t2 = performance.now();
+
+  // Liberar el <img> ANTES de comprimir, no después. El bitmap decodificado de una
+  // foto de 12 MP son ~48 MB que quedarían vivos durante las llamadas a toBlob, con
+  // el GC trabajando entre cada una.
+  // Medido: 433 ms → 3 ms por llamada a toBlob; el pipeline pasó de 3464 ms a 15 ms.
+  // NO mover estas dos líneas al final. Parece limpieza cosmética y no lo es.
+  URL.revokeObjectURL(url);
+  img.src = "";
+
+  const { blob, q, iters } = await encodeAlObjetivo(canvas, maxBytes);
+  const t3 = performance.now();
+
+  return {
+    nombre: file.name, entradaBytes: file.size,
+    exif, sof, sw, sh, dstW, dstH, maxBytes, pasos, q, iters,
+    blob, canvas,
+    tDecode: t1 - t0, tEscala: t2 - t1, tEncode: t3 - t2, tTotal: t3 - t0
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────
+   6. PRESENTACIÓN
+   ───────────────────────────────────────────────────────────── */
+const kb = n => (n / 1024).toFixed(1) + " KB";
+const ms = n => Math.round(n) + " ms";
+
+/* ¿El navegador aplicó la transformación del EXIF? Solo los valores 5-8 cambian
+   los ejes, que es lo único observable comparando el bitmap contra el SOF.
+   Los demás (espejo puro, giro de 180°) no alteran las dimensiones y esta prueba
+   no puede pronunciarse sobre ellos. */
+function veredictoOrientacion(r){
+  if (r.exif == null)  return { texto: "el archivo no trae EXIF", clase: "" };
+  if (r.exif === 1)    return { texto: "EXIF = 1, no requiere transformación", clase: "ok" };
+  if (r.exif === 3)    return { texto: "EXIF = 3, giro de 180° — no detectable por dimensiones", clase: "warn" };
+  if (r.exif === 2 || r.exif === 4)
+    return { texto: `EXIF = ${r.exif}, espejo sin cambio de ejes — no detectable por dimensiones`, clase: "warn" };
+  if (!r.sof)          return { texto: `EXIF = ${r.exif}, sin SOF contra qué comparar`, clase: "" };
+
+  // Se compara ORIENTACIÓN, no igualdad de píxeles: Safari de iOS subsamplea las
+  // imágenes grandes al decodificar y rompe cualquier comparación exacta contra el
+  // SOF por factores de 2, 4 u 8. El intercambio de ejes sobrevive a ese factor.
+  const giro = (r.sw === r.sof.h && r.sh === r.sof.w);
+  if (!giro) return { texto: `EXIF = ${r.exif}, el navegador NO rotó — saldrá de lado`, clase: "err" };
+
+  // 5 y 7 son transpose y transverse: además del cambio de ejes llevan un reflejo
+  // diagonal que esta prueba NO comprueba. Un navegador que rotara sin reflejar
+  // saldría en verde igual. Limitación conocida del arnés, no del pipeline.
+  const reflejo = (r.exif === 5 || r.exif === 7) ? " · reflejo SIN verificar" : "";
+  return { texto: `EXIF = ${r.exif}, el navegador SÍ rotó${reflejo}`, clase: "ok" };
+}
+
+function mostrar(r){
+  const stage = $("stage");
+  stage.classList.remove("empty");
+  stage.innerHTML = "";
+  const prev = new Image();
+  if (urlPreview) URL.revokeObjectURL(urlPreview);   // el de la foto anterior
+  urlPreview = URL.createObjectURL(r.blob);
+  prev.src = urlPreview;
+  prev.alt = "Vista previa de cómo se verá en el marco";
+  stage.appendChild(prev);
+
+  /* Aviso de barras, evaluado POR EJE. Dispara con cualquiera de los dos y el texto
+     tiene que nombrar el correcto: una captura de pantalla de celular (19.5:9, p.ej.
+     1179×2556) sale en 221×480 y deja 31 % del ancho en negro — barras a los LADOS,
+     y la foto no es horizontal. Un texto único mentiría en ese caso, que es frecuente. */
+  const bx = (CFG.TARGET_W - r.dstW) / 2;
+  const by = (CFG.TARGET_H - r.dstH) / 2;
+  const aviso = $("aviso");
+  if (by * 2 / CFG.TARGET_H > CFG.AVISO_BARRAS) {
+    aviso.textContent = "Esta foto es horizontal y el marco está vertical: se verá al centro, con negro arriba y abajo.";
+    aviso.hidden = false;
+  } else if (bx * 2 / CFG.TARGET_W > CFG.AVISO_BARRAS) {
+    aviso.textContent = "Esta foto es más alargada que el marco: se verá al centro, con negro a los lados.";
+    aviso.hidden = false;
+  } else {
+    aviso.hidden = true;
+  }
+
+  // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
+  $("caption").textContent = CFG.DIAG
+    ? `${r.dstW} × ${r.dstH} px · ${kb(r.blob.size)}`
+    : "Lista para subir";
+
+  if (!CFG.DIAG) return;
+  $("diagCard").hidden = false;
+
+  const v = veredictoOrientacion(r);
+
+  /* Tres estados, atados al contrato HTTP: por encima del presupuesto es un
+     resultado documentado (topó la cota de calidad), no un error. El error de
+     verdad es pasarse del tope duro del firmware, que responde 413. */
+  const clasePeso = r.blob.size <= r.maxBytes   ? "ok"
+                  : r.blob.size <= TOPE_FIRMWARE ? "warn" : "err";
+
+  const filas = [
+    ["archivo", r.nombre],
+    ["entrada", `${r.sw} × ${r.sh} · ${kb(r.entradaBytes)}`],
+    ["codificado en el JPEG", r.sof ? `${r.sof.w} × ${r.sof.h}` : "—"],
+    ["orientación", `<span class="${v.clase}">${v.texto}</span>`],
+    ["pasos de halving", `${r.pasos} (÷${Math.pow(2, r.pasos)})`],
+    ["salida", `${r.dstW} × ${r.dstH}`],
+    ["presupuesto", `${kb(r.maxBytes)} · ${CFG.BYTES_PER_PX.toFixed(4)} B/px`],
+    ["calidad JPEG", r.q.toFixed(3) + ` · ${r.iters} intentos`],
+    ["peso final", `<span class="${clasePeso}">${kb(r.blob.size)}</span>`],
+    ["decodificar", ms(r.tDecode)],
+    ["escalar", ms(r.tEscala)],
+    ["comprimir", ms(r.tEncode)],
+    ["total", "<b>" + ms(r.tTotal) + "</b>"]
+  ];
+  $("diag").innerHTML = filas.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+}
+
+/* ─────────────────────────────────────────────────────────────
+   7. EVENTOS
+   ───────────────────────────────────────────────────────────── */
+/* Etapa 5: cuando exista CFG.ENDPOINT, el botón de subir se muestra y se conecta.
+   Mientras tanto no se pinta. Un botón primario deshabilitado para siempre se ve a
+   proyecto y no a producto; sin él, «Guardar JPEG» deja de ser un consuelo y pasa a
+   ser LA acción de este modo. */
+if (!CFG.ENDPOINT) {
+  $("btnUpload").hidden = true;
+  $("hint").textContent = "«Guardar JPEG» descarga el archivo exacto que se subiría al marco, para revisarlo en la computadora.";
+}
+
+/* TODO etapa 3 (rejilla y cola): el input no lleva `multiple` y aquí solo se procesa
+   files[0]. La multi-selección arrastra el procesamiento secuencial cediendo al event
+   loop entre fotos y la concurrencia de subida = 1, que la §4 marca como no
+   negociables. No entra hasta que exista la rejilla. */
+$("file").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $("btnDownload").disabled = true;
+  $("aviso").hidden = true;
+  // Alcanza a pintarse: procesar() abre con `await file.arrayBuffer()`, una tarea
+  // asíncrona real, así que el hilo queda libre antes de cualquier trabajo pesado.
+  $("caption").textContent = "Preparando…";
+  try {
+    resultado = await procesar(file);
+    mostrar(resultado);
+    $("btnDownload").disabled = false;
+  } catch (err) {
+    /* HEIC no se pre-rechaza por tipo: Safari lo decodifica sin problema y Safari es
+       el navegador que importa aquí. El flag solo sirve para dar un mensaje que se
+       entienda cuando la decodificación efectivamente falló. */
+    const esHeic = /image\/hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+    $("caption").textContent = esHeic
+      ? "Esta foto está en formato HEIC y este navegador no lo abre. Desde el iPhone sí funciona. En la computadora, en Ajustes › Cámara › Formatos elige «Más compatible» y vuelve a mandarla."
+      : "No se pudo preparar esa foto: " + err.message;
+    console.error(err);
+  }
+});
+
+$("btnDownload").addEventListener("click", () => {
+  if (!resultado) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(resultado.blob);
+  a.download = resultado.nombre.replace(/\.[^.]+$/, "") + `_${resultado.dstW}x${resultado.dstH}.jpg`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+</script>
+</body>
+</html>

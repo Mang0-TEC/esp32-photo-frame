@@ -129,13 +129,38 @@
   table.diag td{text-align:right;padding:3px 0;font-variant-numeric:tabular-nums}
   .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
 
-  .actions{display:flex;gap:10px}
+  /* flex-wrap y una base de 120 px: con «Subir al marco» de la etapa 5 son tres
+     botones, y a 315 px de ancho útil no caben en una fila. */
+  .actions{display:flex;gap:10px;flex-wrap:wrap}
   .actions button{
-    flex:1;padding:13px;border-radius:8px;border:1px solid var(--line);
+    flex:1 1 120px;padding:13px;border-radius:8px;border:1px solid var(--line);
     background:#fff;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;
   }
   .actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .actions button.destructiva{color:var(--err)}
   button:disabled{opacity:.45;cursor:default}
+
+  /* ── Editor de recuadro ──────────────────────────────────────────────── */
+  .centrado{text-align:center}
+  #lienzo{
+    position:relative;display:inline-block;overflow:hidden;
+    background:#1a1c1f;border-radius:6px;max-width:100%;
+    /* touch-action:none NO es opcional: sin él iOS Safari se queda con el gesto
+       para hacer scroll de la página y el recuadro no se puede arrastrar. */
+    touch-action:none;
+    user-select:none;-webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;cursor:grab;
+  }
+  #lienzo canvas{display:block;max-width:100%;max-height:62vh;width:auto;height:auto}
+  /* La mascarilla de fuera es el box-shadow de la propia caja: un elemento en vez
+     de cuatro rectángulos o un SVG, y el overflow del lienzo recorta el sobrante. */
+  .caja{
+    position:absolute;pointer-events:none;
+    box-shadow:0 0 0 9999px rgba(0,0,0,.55);
+    outline:2px solid #fff;
+  }
+  .zoom{display:flex;align-items:center;gap:12px;margin:14px 0 0;font-size:13px;color:var(--ink-soft)}
+  .zoom input{flex:1;accent-color:var(--accent);height:30px}
 
   .volver{margin:0 0 12px}
   .hint{font-size:12.5px;color:var(--ink-soft);margin:10px 0 0}
@@ -168,6 +193,10 @@
     <div class="rejilla" id="rejilla"></div>
     <p class="aviso" id="avisoFranjas" hidden></p>
     <p class="hint" id="resumenTanda" hidden></p>
+    <div id="diagFiles" hidden>
+      <button type="button" class="btn-min" id="btnProbarFiles">Releer archivos</button>
+      <p class="hint" id="salidaFiles"></p>
+    </div>
   </div>
 
   <div class="card" id="cardAcciones" hidden>
@@ -191,7 +220,12 @@
     <p class="aviso" id="aviso" hidden></p>
   </div>
 
-  <!-- Etapa 4: «Ajustar recuadro» entra aquí, entre el stage y los botones. -->
+  <div class="card" id="cardRecorte">
+    <div class="actions">
+      <button type="button" id="btnRecortar">Ajustar recuadro</button>
+      <button type="button" id="btnQuitarRecorte" hidden>Quitar recorte</button>
+    </div>
+  </div>
 
   <div class="card" id="diagCard" hidden>
     <table class="diag" id="diag"></table>
@@ -200,9 +234,33 @@
   <div class="card">
     <div class="actions">
       <button type="button" id="btnDownload" disabled>Guardar JPEG</button>
+      <button type="button" id="btnQuitarFoto" class="destructiva">Quitar foto</button>
       <button type="button" id="btnUpload" class="primary" disabled>Subir al marco</button>
     </div>
     <p class="hint" id="hint">Sin marco conectado, «Guardar JPEG» descarga el archivo que se subiría, para revisarlo en la computadora.</p>
+  </div>
+
+</div>
+
+<!-- ══════════════ VISTA EDITOR DE RECUADRO ══════════════ -->
+<div id="vistaEditor" hidden>
+
+  <button type="button" class="btn-min volver" id="btnCancelarRecorte">‹ Cancelar</button>
+
+  <div class="card">
+    <div class="centrado">
+      <div id="lienzo"><div class="caja" id="caja" hidden></div></div>
+    </div>
+    <label class="zoom" id="labelZoom">Acercar
+      <input type="range" id="zoom" min="1" max="4" step="0.01" value="1">
+    </label>
+    <p class="hint">Arrastra para mover y usa la barra para acercar. Lo que quede dentro del recuadro es lo que llenará la pantalla.</p>
+  </div>
+
+  <div class="card">
+    <div class="actions">
+      <button type="button" id="btnAplicarRecorte" class="primary">Usar este recuadro</button>
+    </div>
   </div>
 
 </div>
@@ -248,6 +306,12 @@ const CFG = {
 };
 
 const TOPE_FIRMWARE = 64 * 1024;   // el callback de upload responde 413 por encima
+
+/* Tope de zoom del editor de recuadro. El límite duro lo pone la resolución —más
+   allá el recorte tendría menos de 320 px de fuente y se estaría ampliando— y este
+   4 solo acota la parte útil del slider: pasado ~3× ya no se está encuadrando. */
+const ZOOM_MAX = 4;
+const EPS = 1e-6;                  // tolerancia de las comparaciones normalizadas
 
 const $ = id => document.getElementById(id);
 
@@ -413,6 +477,72 @@ function escalar(imagen, sx, sy, sw, sh, dstW, dstH){
 }
 
 /* ─────────────────────────────────────────────────────────────
+   3-bis. GEOMETRÍA DEL RECORTE
+   Cuatro funciones puras, sin DOM. Son la lógica no trivial de esta etapa y las
+   cubre la autocomprobación del final del archivo.
+   ───────────────────────────────────────────────────────────── */
+
+/* Contain + presupuesto por densidad. Vive aquí y no dentro de procesar() para que
+   haya un solo sitio con el cálculo y la autocomprobación pruebe el código real
+   en vez de una copia. Nunca amplía: de ahí el Math.min(…, 1). */
+function medidaSalida(sw, sh){
+  const k = Math.min(CFG.TARGET_W / sw, CFG.TARGET_H / sh, 1);
+  const dstW = Math.max(1, Math.round(sw * k));
+  const dstH = Math.max(1, Math.round(sh * k));
+  return { dstW, dstH, maxBytes: Math.round(dstW * dstH * CFG.BYTES_PER_PX) };
+}
+
+/* La caja 2:3 más grande que cabe en la imagen, en coordenadas normalizadas.
+   Contra un marco de 320×480: una 3:4 vertical pierde ANCHO (0.889 × 1) porque es
+   más ancha que el marco, una 4:3 horizontal pierde la mitad del ancho, una 2:3 no
+   pierde nada, y una captura de celular 19.5:9 pierde ALTO. */
+function cajaMaxima(nw, nh){
+  const w = Math.min(1, nh * CFG.TARGET_W / (nw * CFG.TARGET_H));
+  return { w, h: w * nw * CFG.TARGET_H / (nh * CFG.TARGET_W) };
+}
+
+/* Tope de zoom: el que deja el recorte en CFG.TARGET_W píxeles de fuente. Más allá
+   se estaría ampliando, justo lo que el contain evita. */
+const zoomMaximo = (wBase, nw) =>
+  Math.min(ZOOM_MAX, Math.max(1, wBase * nw / CFG.TARGET_W));
+
+/* ¿La caja cubre la imagen entera? Con tolerancia, NUNCA por igualdad: cajaMaxima()
+   de una 2:3 exacta calcula Math.min(1, 4536*320/(3024*480)) y en flotante eso sale
+   0.9999999999999999. Comparar contra 1 guardaría como «recorte» la foto completa:
+   un reproceso de ~250 ms que no cambia un píxel, un botón «Quitar recorte» que no
+   tiene nada que quitar, y una fila en el diagnóstico que miente. */
+const esCompleta = c =>
+  c.w > 1 - EPS && c.h > 1 - EPS && c.x < EPS && c.y < EPS;
+
+/* De las coordenadas normalizadas al rectángulo fuente que consume escalar().
+
+   EL ESPACIO DE REFERENCIA ES naturalWidth × naturalHeight, o sea el bitmap YA
+   ORIENTADO por el EXIF — que es exactamente el espacio LÓGICO en el que drawImage
+   interpreta (sx,sy,sw,sh). Escribirlo explícito porque es el tipo de ambigüedad
+   que produce recortes girados.
+
+   Consecuencia útil: si el navegador subsamplea el bitmap real al decodificar —lo
+   que hace Safari con imágenes grandes— es él quien mapea este rectángulo al
+   backing store, y aquí no hay nada que corregir. No observado a 12.2 MP, que es
+   el techo del teléfono de prueba y del de la persona destinataria; umbrales
+   mayores quedan fuera del alcance del proyecto por falta de dispositivo. Es lo
+   mismo que hace que el recorte sobreviva al cambio de escala entre la vista
+   previa y el render final.
+
+   Se acota dentro de la imagen: un rectángulo que se salga hace que drawImage
+   escale una región distinta de la pedida, y el encuadre sale corrido. */
+function rectFuente(recorte, nw, nh){
+  if (!recorte) return { sx: 0, sy: 0, sw: nw, sh: nh };
+  const sw = Math.min(nw, Math.max(1, Math.round(recorte.w * nw)));
+  const sh = Math.min(nh, Math.max(1, Math.round(recorte.h * nh)));
+  return {
+    sx: Math.min(Math.max(0, Math.round(recorte.x * nw)), nw - sw),
+    sy: Math.min(Math.max(0, Math.round(recorte.y * nh)), nh - sh),
+    sw, sh
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────
    4. ENCODE AL PRESUPUESTO — búsqueda binaria de la calidad
    El objetivo llega calculado por foto (píxeles de salida × BYTES_PER_PX),
    no es una constante: una foto con barras ocupa menos pantalla y por lo
@@ -446,7 +576,7 @@ async function encodeAlObjetivo(canvas, maxBytes){
 /* ─────────────────────────────────────────────────────────────
    5. PIPELINE
    ───────────────────────────────────────────────────────────── */
-async function procesar(file){
+async function procesar(file, recorte = null){
   const t0 = performance.now();
   const buf = await file.arrayBuffer();
   const exif = leerExifOrientation(buf);
@@ -457,16 +587,16 @@ async function procesar(file){
   try {
     const sw = img.naturalWidth, sh = img.naturalHeight;
 
-    // Contain: cabe dentro de 320×480 respetando proporción, sin ampliar.
-    const escala = Math.min(CFG.TARGET_W / sw, CFG.TARGET_H / sh, 1);
-    const dstW = Math.max(1, Math.round(sw * escala));
-    const dstH = Math.max(1, Math.round(sh * escala));
-
-    // El presupuesto sale de los píxeles que esta foto va a ocupar de pantalla.
-    const maxBytes = Math.round(dstW * dstH * CFG.BYTES_PER_PX);
+    /* Sin recorte, el rectángulo fuente es la imagen entera y el contain deja las
+       barras negras que pinta el firmware. Con recorte, la región ya es 2:3 y la
+       salida son 320×480 exactos — sin barras, y con el presupuesto completo de
+       32,768 B, que es un cluster de la SD. Recortar SUBE el peso del archivo,
+       porque la foto pasa a ocupar más pantalla. */
+    const r = rectFuente(recorte, sw, sh);
+    const { dstW, dstH, maxBytes } = medidaSalida(r.sw, r.sh);
 
     const t1 = performance.now();
-    const { canvas, pasos } = escalar(img, 0, 0, sw, sh, dstW, dstH);
+    const { canvas, pasos } = escalar(img, r.sx, r.sy, r.sw, r.sh, dstW, dstH);
     const t2 = performance.now();
 
     // Liberar el <img> ANTES de comprimir, no después. El bitmap decodificado de una
@@ -521,14 +651,23 @@ async function correrCola(){
   if (cola.corriendo) return;
   cola.corriendo = true; cola.cancelado = false;
   try {
-    // for...of lee la longitud viva del arreglo: si se eligen más fotos a media
-    // tanda, este mismo bucle las toma sin reiniciarse.
-    for (const item of cola.items) {
+    for (;;) {
       if (cola.cancelado) break;
-      if (item.estado !== ESTADO.PENDIENTE) continue;   // ya lista, o ya marcada con error
+      /* Se busca la primera pendiente en vez de recorrer el arreglo con for...of.
+         Así el bucle sobrevive a que se anexen fotos a media tanda —lo de
+         siempre— y a que se quite una, que es nuevo: un splice bajo un iterador
+         por índice corre el resto y deja un elemento sin visitar, para siempre
+         en «pendiente». */
+      const item = cola.items.find(i => i.estado === ESTADO.PENDIENTE);
+      if (!item) break;
+
+      /* Esta asignación va PRIMERA, y no se mueve al reordenar por limpieza. El
+         cuerpo tiene que sacar al item de PENDIENTE: con el for...of anterior uno
+         que siguiera pendiente simplemente se saltaba; aquí se vuelve a elegir
+         eternamente y cuelga la pestaña. */
       item.estado = ESTADO.PROCESANDO; pintarItem(item); pintarBarra();
       try {
-        Object.assign(item, await procesar(item.file));
+        Object.assign(item, await procesar(item.file, item.recorte));
         item.url    = URL.createObjectURL(item.blob);
         item.aviso  = avisoBarras(item);
         item.estado = ESTADO.LISTA;
@@ -554,6 +693,78 @@ async function correrCola(){
    moriría como unhandled rejection silenciosa, dejando la cola detenida y la
    interfaz con el barrido puesto para siempre. */
 const arrancarCola = () => correrCola().catch(err => { console.error(err); pintarBarra(true); });
+
+/* Re-ejecuta el pipeline de una foto YA preparada con otro recorte. `recorte` en
+   null la devuelve a completa, que es lo que hace «Quitar recorte».
+
+   Parte del File ORIGINAL y no del blob comprimido, así que recortar y volver
+   atrás las veces que haga falta no acumula pérdida. Se apoya en que el File del
+   selector sobrevive: medido con una tanda de 30 y el teléfono bloqueado 10
+   minutos, byteLength idéntico a file.size en la primera y en la última. */
+async function reprocesarConRecorte(item, recorte){
+  const previo = { recorte: item.recorte, blob: item.blob, url: item.url,
+                   aviso: item.aviso };
+
+  /* Sin pintarBarra() aquí: durante el reproceso el item no cuenta como LISTA ni
+     como PENDIENTE y la barra parpadearía «29 fotos listas» un segundo. Además no
+     se ve, porque esto solo se dispara desde el detalle. */
+  item.estado = ESTADO.PROCESANDO;
+  pintarItem(item); pintarDetalle(item);
+
+  try {
+    const r = await procesar(item.file, recorte);
+    const urlViejo = item.url;
+    Object.assign(item, r);
+    item.recorte = recorte;
+    item.url     = URL.createObjectURL(item.blob);
+    item.aviso   = avisoBarras(item);          // tras recortar es null por construcción
+    item.estado  = ESTADO.LISTA;
+    pintarItem(item); pintarDetalle(item); pintarBarra();
+    // Revocar DESPUÉS de repintar: hacerlo con los <img> todavía apuntando al url
+    // viejo deja miniaturas rotas en Safari. Mismo motivo que en limpiarTanda().
+    if (urlViejo) URL.revokeObjectURL(urlViejo);
+  } catch (err) {
+    /* Regla 2: una foto que ya estaba lista NO se pierde porque el reproceso
+       falle. Se restaura tal cual —sigue siendo subible, solo que no recortable— y
+       se dice qué pasó. El caso vivo es NotReadableError, si iOS soltó el temporal
+       del selector bajo presión de memoria. */
+    Object.assign(item, previo);
+    item.estado = previo.blob ? ESTADO.LISTA : ESTADO.ERROR;
+    pintarItem(item); pintarDetalle(item); pintarBarra();
+    avisarEnDetalle(mensajeDeError(err, item.file));
+    console.error(err);
+  }
+}
+
+/* Saca una foto de la tanda. Existe porque una en `error` solo se podía quitar
+   vaciando la tanda entera, y porque la etapa 5 necesita poder descartar una que
+   falle al subir una y otra vez.
+
+   INVARIANTE que hoy hace innecesario cualquier guard contra la cola: esto solo es
+   alcanzable desde el detalle, y el detalle solo abre en LISTA o ERROR, así que la
+   foto que correrCola() tiene entre manos nunca desaparece bajo sus pies. El día
+   que alguien ponga una «×» en el mosaico eso deja de ser cierto. */
+function quitarFoto(id){
+  const i = cola.items.findIndex(it => it.id === id);
+  if (i < 0) return;
+  const item = cola.items[i];
+  if (item.estado === ESTADO.PROCESANDO) return;   // hay un reproceso en vuelo
+  if (!confirm("¿Quitar esta foto de la tanda?")) return;
+
+  cerrarDetalle();
+  // Fuera del DOM ANTES de revocar, como en limpiarTanda().
+  const el = document.getElementById("m" + item.id);
+  if (el) el.remove();
+  if (item.url) URL.revokeObjectURL(item.url);
+  cola.items.splice(i, 1);
+
+  // El número del badge sale de indexOf: las POSTERIORES se corrieron una posición
+  // y hay que repintarlas. Sacar el nodo no basta.
+  for (const p of cola.items.slice(i)) pintarItem(p);
+
+  $("avisoTope").hidden = true;                    // ya hay hueco otra vez
+  pintarBarra();
+}
 
 function mensajeDeError(err, file){
   /* HEIC no se pre-rechaza por tipo: Safari lo decodifica sin problema. Y en el
@@ -622,9 +833,14 @@ function filasDiag(r){
   const clasePeso = r.blob.size <= r.maxBytes   ? "ok"
                   : r.blob.size <= TOPE_FIRMWARE ? "warn" : "err";
 
+  // Solo cuando hay recorte, y en píxeles del original: es lo que hay que poder
+  // contrastar contra la salida cuando un encuadre sale donde no debía.
+  const rf = r.recorte ? rectFuente(r.recorte, r.sw, r.sh) : null;
+
   return [
     ["archivo", r.nombre],
     ["entrada", `${r.sw} × ${r.sh} · ${kb(r.entradaBytes)}`],
+    ...(rf ? [["recorte", `${rf.sw}×${rf.sh} @ ${rf.sx},${rf.sy}`]] : []),
     ["codificado en el JPEG", r.sof ? `${r.sof.w} × ${r.sof.h}` : "—"],
     ["orientación", `<span class="${v.clase}">${v.texto}</span>`],
     ["pasos de halving", `${r.pasos} (÷${Math.pow(2, r.pasos)})`],
@@ -785,6 +1001,7 @@ function abrirDetalle(id){
 
 function cerrarDetalle(porHistoria){
   if (detalleId === null) return;
+  cerrarEditor();                       // camino imposible hoy, pero el canvas pesa
   detalleId = null;
   $("vistaDetalle").hidden = true;
   $("vistaRejilla").hidden = false;
@@ -792,43 +1009,256 @@ function cerrarDetalle(porHistoria){
   historiaEmpujada = false;
 }
 
-window.addEventListener("popstate", () => cerrarDetalle(true));
+/* Dos niveles de historial: rejilla → detalle → editor, los dos empujados con la
+   MISMA URL (invariante de §4: el AsyncWebServer tiene cinco rutas y ningún
+   catch-all). El manejador decide por lo que está abierto, no por el estado. */
+window.addEventListener("popstate",
+  () => { if (ed) cerrarEditor(); else cerrarDetalle(true); });
 
 function pintarDetalle(item){
   const stage = $("stage");
-  stage.innerHTML = "";
+  const procesando = item.estado === ESTADO.PROCESANDO;
 
   if (item.estado === ESTADO.ERROR) {
+    stage.innerHTML = "";
     stage.className = "stage empty";
     stage.textContent = "No se pudo preparar esta foto";
     $("caption").textContent = item.error;
     $("aviso").hidden = true;
     $("diagCard").hidden = true;
+    $("cardRecorte").hidden = true;      // sin dimensiones no hay nada que recortar
     $("btnDownload").disabled = true;
+    $("btnQuitarFoto").disabled = false; // y aquí es LA acción de la pantalla
     return;
   }
 
-  stage.className = "stage";
-  const prev = new Image();
-  prev.src = item.url;
-  prev.alt = "Vista previa de cómo se verá en el marco";
-  stage.appendChild(prev);
+  /* Durante un reproceso se conserva la imagen anterior: sigue siendo válida, y
+     parpadear a negro 250 ms se ve peor que esperar sobre algo correcto. */
+  if (!procesando) {
+    stage.innerHTML = "";
+    stage.className = "stage";
+    const prev = new Image();
+    prev.src = item.url;
+    prev.alt = "Vista previa de cómo se verá en el marco";
+    stage.appendChild(prev);
+  }
 
   const aviso = $("aviso");
   aviso.hidden = !item.aviso;
   if (item.aviso) aviso.textContent = item.aviso;
 
   // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
-  $("caption").textContent = CFG.DIAG
-    ? `${item.dstW} × ${item.dstH} px · ${kb(item.blob.size)}`
+  $("caption").textContent = procesando ? "Ajustando…"
+    : CFG.DIAG ? `${item.dstW} × ${item.dstH} px · ${kb(item.blob.size)}`
     : "Lista para subir";
 
-  $("btnDownload").disabled = false;
+  /* Todos los botones fuera de servicio mientras se recalcula. «Quitar foto»
+     incluido, y no por pulcritud: sacar de la cola un item en PROCESANDO deja el
+     object URL que crea reprocesarConRecorte() al terminar sin nadie que lo
+     revoque. Fuga silenciosa y difícil de reproducir. */
+  $("btnDownload").disabled     = procesando;
+  $("btnQuitarFoto").disabled   = procesando;
+  $("btnRecortar").disabled     = procesando;
+  $("btnQuitarRecorte").disabled = procesando;
+
+  $("cardRecorte").hidden = false;
+  $("btnQuitarRecorte").hidden = !item.recorte;
 
   $("diagCard").hidden = !CFG.DIAG;
   if (CFG.DIAG)
     $("diag").innerHTML = filasDiag(item).map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
 }
+
+/* Un fallo del reproceso no puede quedarse mudo: la foto sigue siendo la de antes
+   y hay que decir por qué no cambió. Va en el mismo sitio que el aviso de franjas,
+   que es donde la vista ya mira. Se llama DESPUÉS de pintarDetalle(), que lo
+   reinicia. */
+function avisarEnDetalle(texto){
+  $("aviso").hidden = false;
+  $("aviso").textContent = texto;
+}
+
+/* ── Editor de recuadro ───────────────────────────────────────────────────── */
+
+/* Estado vivo del editor. Vive AQUÍ y no en el item, que es lo que hace que
+   cancelar a media edición no cambie nada: item.recorte solo se escribe al
+   confirmar. Todo normalizado 0-1 contra el bitmap ya orientado — ver rectFuente(). */
+let ed = null;
+// ed = { item, nw, nh, canvas, wBase, hBase, zMax, zoom, x, y, w, h, arrastre }
+let editorEmpujado = false;
+
+/* La imagen sobre la que se arrastra: la foto COMPLETA reducida a ~2× el destino.
+   No se retiene una por foto —2.4 MB × 30 compitiendo con las miniaturas— sino que
+   se reconstruye al abrir el editor y se libera al cerrarlo. Cuesta un cuarto de
+   segundo, medido. */
+async function vistaPrevia(file){
+  const { img, url } = await cargarImagen(file);
+  try {
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+
+    /* CONTAIN PROPIO, y no es cosmética. escalar() estira a las dimensiones que
+       reciba: no preserva proporción, el contain del pipeline vive en
+       medidaSalida(). Pasarle (640, 960) aplastaría a 2:3 toda foto que no lo sea
+       —una 3:4 y una 4:3, o sea casi todo— y como el recuadro se pinta en
+       PORCENTAJES sobre esta imagen, lo que se encuadra dejaría de ser lo que se
+       recorta. No se ve nada roto; salen mal los encuadres.
+
+       Y ajusta a la pantalla del TELÉFONO, no al marco: por eso no usa
+       medidaSalida(), que ajusta a 320×480.
+
+       EL 2× LLEVA UN SUPUESTO DE DENSIDAD, y conviene tenerlo escrito. El lienzo
+       mide ~352 pt de ancho, así que a 2× —el iPhone 11, el teléfono de
+       referencia— pide 704 px de dispositivo y esta previa da 640: 9 % de
+       submuestreo, imperceptible salvo en pelo o textura fina. Pero en una
+       pantalla 3× pediría ~1056 y el déficit sería del 40 %.
+       Si al medir en el teléfono el recuadro se ve suave, la constante NO se sube
+       a un número mayor: se deriva de devicePixelRatio, que cuesta lo mismo y no
+       vuelve a envejecer. Con tope, para que un 3× sobre una foto de 12 MP no
+       dispare el tamaño del canvas. */
+    const k  = Math.min(2 * CFG.TARGET_W / nw, 2 * CFG.TARGET_H / nh, 1);
+    const pw = Math.max(1, Math.round(nw * k));
+    const ph = Math.max(1, Math.round(nh * k));
+    const { canvas } = escalar(img, 0, 0, nw, nh, pw, ph);
+    return { canvas, nw, nh };
+  } finally {
+    // Mismo motivo que en procesar(): ~48 MB de bitmap que no tienen por qué
+    // seguir vivos mientras alguien arrastra un recuadro.
+    URL.revokeObjectURL(url); img.src = "";
+  }
+}
+
+async function abrirEditor(id){
+  const item = cola.items.find(i => i.id === id);
+  if (!item || item.estado !== ESTADO.LISTA) return;
+
+  $("btnRecortar").disabled = true;          // la decodificación tarda ~250 ms
+  let previa;
+  try {
+    previa = await vistaPrevia(item.file);
+  } catch (err) {
+    // Regla 2: si el File ya no se puede leer, la foto preparada sigue intacta.
+    console.error(err);
+    avisarEnDetalle(mensajeDeError(err, item.file));
+    $("btnRecortar").disabled = false;
+    return;
+  }
+
+  const base = cajaMaxima(previa.nw, previa.nh);
+  ed = {
+    item, nw: previa.nw, nh: previa.nh, canvas: previa.canvas,
+    wBase: base.w, hBase: base.h,
+    zMax: zoomMaximo(base.w, previa.nw), zoom: 1,
+    x: 0, y: 0, w: base.w, h: base.h, arrastre: null
+  };
+
+  if (item.recorte) {
+    // Reabrir sobre un recorte existente lo continúa, no lo tira.
+    ed.zoom = Math.min(ed.zMax, Math.max(1, base.w / item.recorte.w));
+    ed.w = item.recorte.w; ed.h = item.recorte.h;
+    ed.x = item.recorte.x; ed.y = item.recorte.y;
+  } else {
+    ed.x = (1 - ed.w) / 2; ed.y = (1 - ed.h) / 2;
+  }
+
+  $("lienzo").insertBefore(ed.canvas, $("caja"));
+  $("caja").hidden = false;
+  const z = $("zoom");
+  z.max = ed.zMax; z.value = ed.zoom;
+  // Una foto que ya es 2:3 y apenas más grande que el marco no tiene margen para
+  // acercarse. Se esconde el control entero: un slider muerto se ve a proyecto.
+  $("labelZoom").hidden = ed.zMax <= 1 + EPS;
+  pintarCaja();
+
+  $("vistaDetalle").hidden = true;
+  $("vistaEditor").hidden = false;
+  window.scrollTo(0, 0);
+
+  editorEmpujado = false;
+  try { history.pushState({ editor: id }, "", location.href); editorEmpujado = true; }
+  catch { /* sin historial; «‹ Cancelar» sigue funcionando */ }
+  $("btnRecortar").disabled = false;
+}
+
+/* Solo desmonta: NO toca el historial. El detalle puede permitirse llamar a
+   history.back() desde su cierre porque su guard (detalleId === null) anula el
+   popstate que él mismo provoca; con dos niveles ese truco se rompe —cerrarEditor()
+   deja ed en null, y el popstate de su propio back() encontraría ed nulo y cerraría
+   también el detalle—. Por eso aquí navegan los botones, vía salirDelEditor(). */
+function cerrarEditor(){
+  if (!ed) return;
+  ed.canvas.remove();
+  ed.canvas.width = ed.canvas.height = 0;    // ~2.4 MB de backing store
+  ed = null;
+  $("caja").hidden = true;
+  $("vistaEditor").hidden = true;
+  $("vistaDetalle").hidden = false;
+  editorEmpujado = false;
+}
+
+const salirDelEditor = () => { if (editorEmpujado) history.back(); else cerrarEditor(); };
+
+/* El recuadro se posiciona en PORCENTAJES: el estado normalizado se pinta tal cual,
+   sin una sola conversión a píxeles, y girar el teléfono a media edición no lo
+   mueve. */
+function pintarCaja(){
+  const s = $("caja").style;
+  s.left  = ed.x * 100 + "%"; s.top    = ed.y * 100 + "%";
+  s.width = ed.w * 100 + "%"; s.height = ed.h * 100 + "%";
+}
+
+const acotar = (v, max) => Math.min(Math.max(v, 0), max);
+
+function mover(dx, dy){
+  ed.x = acotar(ed.x + dx, 1 - ed.w);
+  ed.y = acotar(ed.y + dy, 1 - ed.h);
+  pintarCaja();
+}
+
+function aplicarZoom(z){
+  const cx = ed.x + ed.w / 2, cy = ed.y + ed.h / 2;   // se conserva el centro
+  ed.zoom = Math.min(Math.max(z, 1), ed.zMax);
+  ed.w = ed.wBase / ed.zoom;
+  ed.h = ed.hBase / ed.zoom;
+  ed.x = acotar(cx - ed.w / 2, 1 - ed.w);
+  ed.y = acotar(cy - ed.h / 2, 1 - ed.h);
+  pintarCaja();
+}
+
+/* Pointer Events, un solo camino para mouse y dedo — no touchstart y mousedown por
+   separado, como exige §4. Se arrastra el RECUADRO, no la foto: es lo que el
+   rectángulo dibujado afirma, e invertir el eje lo contradiría. */
+(function gestos(){
+  const lienzo = $("lienzo");
+  lienzo.addEventListener("pointerdown", e => {
+    if (!ed) return;
+    lienzo.setPointerCapture(e.pointerId);      // el dedo puede salirse del lienzo
+    ed.arrastre = { id: e.pointerId, px: e.clientX, py: e.clientY };
+  });
+  lienzo.addEventListener("pointermove", e => {
+    if (!ed || !ed.arrastre || e.pointerId !== ed.arrastre.id) return;
+    const r = lienzo.getBoundingClientRect();   // única conversión px → normalizado
+    mover((e.clientX - ed.arrastre.px) / r.width,
+          (e.clientY - ed.arrastre.py) / r.height);
+    ed.arrastre.px = e.clientX; ed.arrastre.py = e.clientY;
+  });
+  for (const ev of ["pointerup", "pointercancel"])
+    lienzo.addEventListener(ev, () => { if (ed) ed.arrastre = null; });
+})();
+
+$("zoom").addEventListener("input", e => { if (ed) aplicarZoom(parseFloat(e.target.value)); });
+
+$("btnCancelarRecorte").addEventListener("click", salirDelEditor);
+
+$("btnAplicarRecorte").addEventListener("click", () => {
+  if (!ed) return;
+  const item = ed.item;
+  const caja = { x: ed.x, y: ed.y, w: ed.w, h: ed.h };
+  // Una caja que cubre la imagen entera NO es un recorte: se guarda null y la foto
+  // sigue siendo «completa». Con tolerancia, ver esCompleta().
+  const recorte = esCompleta(caja) ? null : caja;
+  salirDelEditor();
+  reprocesarConRecorte(item, recorte).catch(err => console.error(err));
+});
 
 /* ─────────────────────────────────────────────────────────────
    7. EVENTOS
@@ -892,6 +1322,48 @@ $("btnCola").addEventListener("click", () => {
 $("btnLimpiar").addEventListener("click", limpiarTanda);
 $("btnVolver").addEventListener("click", () => cerrarDetalle());
 
+$("btnRecortar").addEventListener("click", () => {
+  abrirEditor(detalleId).catch(err => {
+    console.error(err); $("btnRecortar").disabled = false;
+  });
+});
+
+$("btnQuitarRecorte").addEventListener("click", () => {
+  const item = cola.items.find(i => i.id === detalleId);
+  if (item && item.recorte)
+    reprocesarConRecorte(item, null).catch(err => console.error(err));
+});
+
+$("btnQuitarFoto").addEventListener("click", () => quitarFoto(detalleId));
+
+/* Diagnóstico: relee la primera y la última de la tanda y compara byteLength
+   contra file.size. Es la prueba de que los File del selector siguen vivos, que es
+   de lo que dependen el recorte y —en la etapa 5— la subida. */
+$("diagFiles").hidden = !CFG.DIAG;
+$("btnProbarFiles").addEventListener("click", async () => {
+  const btn = $("btnProbarFiles"), out = $("salidaFiles");
+  btn.disabled = true;
+  out.textContent = "Releyendo…";
+  const l = cola.items;
+  if (!l.length) { out.textContent = "sin fotos en la tanda"; btn.disabled = false; return; }
+
+  const objetivos = l.length === 1 ? [l[0]] : [l[0], l[l.length - 1]];
+  const lineas = [];
+  for (const it of objetivos) {
+    const n = l.indexOf(it) + 1;
+    try {
+      const t = performance.now();
+      const b = await it.file.arrayBuffer();
+      lineas.push(`#${n} ${b.byteLength === it.file.size ? "OK" : "DIFIERE"} · ` +
+                  `${b.byteLength}/${it.file.size} B · ${ms(performance.now() - t)}`);
+    } catch (e) {
+      lineas.push(`#${n} ILEGIBLE — ${e.name}`);
+    }
+  }
+  out.textContent = lineas.join(" · ");
+  btn.disabled = false;
+});
+
 $("btnDownload").addEventListener("click", () => {
   const item = cola.items.find(i => i.id === detalleId);
   if (!item || !item.blob) return;
@@ -903,6 +1375,51 @@ $("btnDownload").addEventListener("click", () => {
 });
 
 pintarBarra();
+
+/* ─────────────────────────────────────────────────────────────
+   8. AUTOCOMPROBACIÓN DE LA GEOMETRÍA — solo con CFG.DIAG
+   No hay forma de ver a ojo que estas cuatro funciones estén bien: un recuadro
+   que no sea exactamente 2:3 produce barras negras después de recortar, que es
+   justo lo que el recorte venía a quitar.
+   ───────────────────────────────────────────────────────────── */
+if (CFG.DIAG) (function comprobarGeometria(){
+  const cerca = (a, b) => Math.abs(a - b) < 1e-9;
+  const casos = [
+    ["3:4 vertical (celular)",  3024, 4032],
+    ["4:3 horizontal",          4032, 3024],
+    ["2:3 vertical (réflex)",   3024, 4536],
+    ["19.5:9 (captura)",        1179, 2556]
+  ];
+
+  for (const [nombre, nw, nh] of casos) {
+    const c = cajaMaxima(nw, nh);
+    console.assert(c.w <= 1 + 1e-9 && c.h <= 1 + 1e-9, `${nombre}: la caja se sale`);
+    // La restricción de 2:3 vive en PÍXELES, no en las coordenadas normalizadas
+    console.assert(cerca(c.w * nw / (c.h * nh), CFG.TARGET_W / CFG.TARGET_H),
+                   `${nombre}: la caja no es 2:3`);
+
+    // El requisito de la etapa: confirmar deja 320×480 exactos y presupuesto pleno
+    const r = rectFuente({ x: 0, y: 0, w: c.w, h: c.h }, nw, nh);
+    const m = medidaSalida(r.sw, r.sh);
+    console.assert(m.dstW === CFG.TARGET_W && m.dstH === CFG.TARGET_H,
+                   `${nombre}: salida ${m.dstW}×${m.dstH}, se esperaba 320×480`);
+    console.assert(m.maxBytes === 32768, `${nombre}: presupuesto ${m.maxBytes} B`);
+  }
+
+  // El caso que una comparación por igualdad fallaría
+  console.assert(esCompleta(Object.assign({ x: 0, y: 0 }, cajaMaxima(3024, 4536))),
+                 "una 2:3 exacta debería contar como foto completa");
+  console.assert(!esCompleta(Object.assign({ x: 0, y: 0 }, cajaMaxima(3024, 4032))),
+                 "una 3:4 sí es un recorte real");
+
+  // rectFuente nunca se sale de la imagen, ni con un recorte inconsistente
+  const fuera = rectFuente({ x: 0.9, y: 0.9, w: 0.5, h: 0.5 }, 1000, 1000);
+  console.assert(fuera.sx + fuera.sw === 1000 && fuera.sy + fuera.sh === 1000,
+                 "rectFuente no acota dentro de la imagen");
+  const todo = rectFuente(null, 800, 600);
+  console.assert(todo.sw === 800 && todo.sh === 600 && todo.sx === 0 && todo.sy === 0,
+                 "sin recorte el rectángulo debe ser la imagen entera");
+})();
 </script>
 </body>
 </html>

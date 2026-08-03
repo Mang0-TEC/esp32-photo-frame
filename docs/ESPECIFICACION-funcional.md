@@ -149,11 +149,15 @@ Cada foto de la tanda es un elemento con **identidad propia y estado propio**, n
 - **Un error en una foto no tumba la tanda.** Se marca esa, se sigue con la siguiente, y al final se dice cuántas fallaron.
 - **Elegir más fotos anexa, nunca reemplaza.** Volver al selector después de preparar diez y elegir tres más deja trece, no tres. Nadie va a intuir que abrir el selector destruye trabajo ya hecho —y con la capa de subida encima serían fotos ya listas para subir—, así que lo único que vacía la tanda es el botón de limpiar, que es un gesto explícito. Anexar al final además preserva «orden de selección = orden de subida».
 - **Se puede cancelar a media tanda.** Lo ya preparado se conserva —es trabajo válido— y las que faltaban quedan en `pendiente`, listas para continuar.
+- **Se puede quitar una foto sin vaciar la tanda.** Está en su detalle, junto a «Guardar JPEG», y con confirmación porque destruye trabajo ya preparado. Es la única salida para una foto en `error`, y en la etapa 5 lo será para una que falle al subir una y otra vez. Al quitarla se revoca su object URL y se repintan las **posteriores**, cuyo número visible sale de su posición en la cola.
+- **El bucle de preparación busca la primera `pendiente`; no recorre el arreglo.** Es lo que lo hace inmune a que se anexen fotos a media tanda y a que se quite una: un `splice` bajo un iterador por índice corre el resto y deja un elemento sin visitar, en `pendiente` para siempre. A cambio, el cuerpo del bucle **tiene** que sacar al elemento de `pendiente` en su primera línea, o gira sobre él.
 - **Tope de 30 fotos en la tanda.** No es memoria de los archivos preparados —30 × 32 KB son 960 KB— sino de las miniaturas: 30 bitmaps decodificados de 320×480 son ~18 MB vivos en la rejilla. El tope existe sobre todo porque el selector de iOS tiene «Seleccionar todo» a un toque, y vaciar un álbum de 800 fotos mataría la pestaña a media tanda, perdiendo el trabajo ya hecho y sin explicación. Al pasarse se avisa en lenguaje llano y se aceptan las que caben.
 
 > **Sin verificar: el orden que entrega el selector de iOS.** No está medido si `<input type="file" multiple>` en Safari de iOS devuelve las fotos en el orden en que se tocaron o en el de la fototeca. Como ese orden acaba siendo el de reproducción en el marco, la rejilla numera cada miniatura para que sea visible antes de subir. Si la medición dice que el selector impone su propio orden, las salidas son ordenar por fecha de captura o permitir reordenar arrastrando — ninguna de las dos se construye a ciegas.
->
-> **Sin verificar: que un `File` siga siendo legible minutos después.** El diseño se apoya en que los `File` del selector son handles a disco y no memoria, de modo que conservar treinta no cuesta nada y **releerlos** es lo que sostiene tanto el recorte manual (que re-ejecuta el pipeline desde el original) como la subida. En Safari de iOS esos archivos viven en un temporal y hay reportes de `NotReadableError` al releerlos pasado un rato o bajo presión de memoria. **No está medido en este proyecto y no se afirma.** Si resulta falso, la salida es conservar el blob ya comprimido y aceptar que el recorte parta de él, con la pérdida de calidad que eso implica — decisión distinta, y mejor tomarla sabiendo.
+
+**Medido: el `File` del selector de iOS sobrevive.** Era el supuesto que sostenía toda la etapa 4, porque el recorte re-ejecuta el pipeline desde el archivo original y no desde el blob comprimido — es lo que hace que recortar y deshacer las veces que haga falta no acumule pérdida. La duda era real: en Safari de iOS esos archivos viven en un temporal y hay reportes de `NotReadableError` al releerlos pasado un rato.
+
+Condiciones de la medición, en un iPhone 11: tanda de **30 fotos**, teléfono **bloqueado 10 minutos**, y después `file.arrayBuffer()` sobre la primera y la última — `byteLength` idéntico a `file.size` en ambas. **No se midió bajo presión de memoria de otras apps**, así que el `catch` de `NotReadableError` se queda por la regla 2: si el reproceso falla, la foto que ya estaba lista se conserva intacta y solo se avisa de que no se pudo recortar. La prueba está integrada como botón del panel de diagnóstico, para poder repetirla en la etapa 5.
 
 ### Presupuesto de bytes: proporcional a los píxeles de salida
 
@@ -162,6 +166,8 @@ Cada foto de la tanda es un elemento con **identidad propia y estado propio**, n
 **El objetivo no es un tamaño fijo, es una densidad: 0.213 bytes por píxel** de la imagen de salida (≈1.71 bpp), que sale de 32,768 B ÷ (320×480).
 
 Los 32,768 B del caso que llena la pantalla no son un número redondo por casualidad: es exactamente un cluster de la tarjeta (ver el BOM). Una foto dentro de presupuesto ocupa un cluster y ni un byte más.
+
+> **Consecuencia contraintuitiva: recortar SUBE el peso del archivo.** Una 3:4 de celular entra completa en 320×427 con un objetivo de 28.5 KB; recortada a 2:3 sale en 320×480 y su objetivo pasa a los 32,768 B completos. Es correcto —la foto ocupa más pantalla y merece más bytes— pero es lo contrario de lo que la palabra «recortar» sugiere, y explica por qué una foto que topaba la cota de calidad puede dejar de topar tras recortarla.
 
 | Salida | Proporción de entrada | Píxeles | Objetivo |
 |---|---|---|---|
@@ -246,13 +252,24 @@ El bitmap decodificado de una foto de 12 MP son ~48 MB. Si siguen vivos durante 
 
 La rotación se aplica **una sola vez**, en el primer paso del halving, y solo si se comprobó que el navegador no la aplicó ya.
 
-**Cómo se comprueba: por orientación, nunca por igualdad de píxeles.** La pregunta es si el bitmap salió vertical u horizontal, comparado con lo que dicen el marcador SOF del JPEG y el tag `0x0112`. La comparación tentadora —¿las dimensiones del bitmap coinciden exactamente con las del SOF?— se rompe en Safari de iOS: con imágenes grandes aplica subsampling al decodificar, lo que afecta el resultado de `drawImage` por factores de 2, 4 u 8. La señal de orientación sobrevive a cualquier factor de subsampling; la de igualdad exacta no.
+**Cómo se comprueba: por orientación, nunca por igualdad de píxeles.** La pregunta es si el bitmap salió vertical u horizontal, comparado con lo que dicen el marcador SOF del JPEG y el tag `0x0112`. La comparación tentadora —¿las dimensiones del bitmap coinciden exactamente con las del SOF?— es frágil: se ha reportado que Safari de iOS subsamplea las imágenes grandes al decodificar, por factores de 2, 4 u 8. **Aquí no se ha observado a 12.2 MP** (ver la nota de alcance más abajo), pero la elección no cuesta nada y no depende de eso: la señal de orientación sobrevive a cualquier factor de subsampling y la de igualdad exacta no, así que se compara lo que es robusto.
 
 > `naturalWidth` no sirve para detectar el subsampling: reporta las dimensiones lógicas decodificadas, no las del bitmap real.
 
 #### Lo verificado
 
-Medido en el **navegador integrado de VS Code (Simple Browser) sobre macOS**, que es un webview de Electron y por lo tanto motor **Chromium**. Ahí la rotación EXIF **sí** se aplica sola por la ruta `<img>`.
+**En Safari de iOS, sobre un iPhone 11.** Es el motor que importa: el navegador del celular de la persona destinataria. La rotación EXIF **sí** se aplica sola por la ruta `<img>`.
+
+| Archivo | Entrada | EXIF | SOF | Veredicto | Salida | Peso | q | Intentos | Total |
+|---|---|---|---|---|---|---|---|---|---|
+| image.jpg | 2316×3088 | 6 | 3088×2316 | **SÍ rotó** | 320×427 | 26.9 KB | 0.657 | 4 | 289 ms |
+| IMG_1473.jpeg (de HEIC) | 3024×4032 | 6 | 4032×3024 | **SÍ rotó** | 320×427 | 40.3 KB | 0.620 | 8 | 204 ms |
+
+`IMG_1473` es el caso de la cota: 8 intentos y q en el suelo de 0.620 significan que topó, y sus 40.3 KB están por encima de los 28.5 de presupuesto. Es el resultado documentado, no un error — el diagnóstico lo marca en ámbar. Recortada a 2:3 su presupuesto sube a 32,768 B.
+
+Que el selector del iPhone entregue un `IMG_1473.jpeg` y no un `.heic` está medido también: transcodifica al elegir.
+
+**En Chromium** (el navegador integrado de VS Code sobre macOS, que es un webview de Electron), con más proporciones y con el caso de transpose:
 
 | Archivo | Entrada | EXIF | SOF | Salida | Peso | q | Intentos | Total |
 |---|---|---|---|---|---|---|---|---|
@@ -264,12 +281,16 @@ Medido en el **navegador integrado de VS Code (Simple Browser) sobre macOS**, qu
 
 #### Lo que sigue abierto
 
-- **Ningún motor WebKit fue probado.** Ni Safari de macOS ni Safari de iOS. Todo lo de arriba es Chromium, así que el pendiente sigue completo: el navegador que importa es el del celular de la persona destinataria, y hasta que el panel diga «SÍ rotó» ahí, esto es **no verificado**.
-- **El subsampling de Safari sigue sin observarse**, precisamente porque no se corrió en Safari. La foto de 48 MP (8064×6048) existe como caso para provocarlo a propósito y todavía no se usó.
-- **EXIF = 5 es transpose: espejo diagonal, no solo rotación.** El parser comprueba el intercambio de ejes pero **no** el reflejo. Un navegador que rotara sin reflejar daría veredicto verde igualmente. Es el caso de IMG_1470 en la tabla, y el panel lo marca como «reflejo SIN verificar» para que no se lea como una comprobación que no es. Limitación conocida del arnés, no del pipeline.
-- **Calidad en fotos con ruido de alta frecuencia.** IMG_1434 (césped y pelaje) terminó en q = 0.688 contra 0.862 de una foto con pared lisa. Puede haber bloqueo visible. Se evalúa cuando llegue el hardware, sobre la pantalla real — no tiene sentido juzgarlo en un monitor.
+Dos puntos, y ninguno bloquea la construcción:
 
-Las fotos que faltan por pasar: una vertical de iPhone sin editar y sin pasar por WhatsApp, contra Safari de iOS, y una de 48 MP para el subsampling.
+- **EXIF = 5 (transpose) está verificado solo en Chromium.** Es espejo diagonal, no solo rotación, y el arnés comprueba el intercambio de ejes pero **no** el reflejo — un navegador que rotara sin reflejar daría veredicto verde igualmente, en cualquier motor. El panel lo marca como «reflejo SIN verificar» para que no se lea como una comprobación que no es. Limitación conocida del arnés, no del pipeline. Lo medido en Safari de iOS son dos fotos con EXIF 6; ninguna con 5.
+- **Calidad a q = 0.620 sobre la pantalla real.** Hay un caso medido detrás: `IMG_1473`, tirol blanco, 40.3 KB contra 28.5 de presupuesto y la calidad en el suelo. Puede haber bloqueo visible. Se juzga cuando llegue el hardware, sobre el ST7796S — no tiene sentido evaluarlo en un monitor.
+
+#### El subsampling: nota de alcance, no pendiente
+
+**No es un pendiente alcanzable, y por eso sale de la lista de arriba.** No se observó a 12.2 MP, que es el techo del iPhone 11 con el que se mide y también el del teléfono de la persona destinataria. La foto de 48 MP (8064×6048) que se planteaba como caso para provocarlo no existe en la ruta de producción de nadie, y no hay dispositivo con el que generarla.
+
+Sí importa entender **por qué el pipeline degradaría bien si ocurriera**, y por eso está escrito en el código del editor: `naturalWidth/Height` reporta las dimensiones lógicas decodificadas y `drawImage` interpreta su rectángulo fuente en ese mismo espacio lógico, de modo que es el navegador quien lo mapea al backing store real. El veredicto de orientación, por su parte, compara ejes y no igualdad de píxeles, precisamente porque la señal de orientación sobrevive a cualquier factor de subsampling.
 
 ### Sobre librerías de recorte
 
@@ -283,13 +304,41 @@ Las fotos de celular vienen en 3:4 o 9:16 contra una pantalla de 2:3, así que s
 
 Tras la decisión de orientación (§6) el editor dejó de ser una mejora prescindible: es la compensación de que las fotos horizontales queden a media pantalla. Una 4:3 horizontal sin recortar sale en 320×240 con la mitad del alto en negro; recortada a 2:3 llena los 320×480.
 
-Tres restricciones de implementación:
+Restricciones de implementación:
 
-- **Opera sobre la imagen ya reducida a ~2× el destino**, nunca sobre los 12 MP originales. Arrastrar un recuadro sobre una imagen de 12 MP en un celular va a tirones.
-- **Pointer Events** (`pointerdown` / `pointermove` / `pointerup`), que unifica mouse y touch en un solo camino de código. No `touchstart` y `mousedown` por separado.
-- **Estado en coordenadas normalizadas de 0 a 1**, para que sobreviva a los cambios de escala entre la vista previa y el render final.
+- **Opera sobre la imagen reducida a ~2× el destino**, nunca sobre los 12 MP originales. Arrastrar un recuadro sobre una imagen de 12 MP en un celular va a tirones.
+- **Pointer Events** (`pointerdown` / `pointermove` / `pointerup`), que unifica mouse y touch en un solo camino de código. No `touchstart` y `mousedown` por separado. El contenedor lleva `touch-action:none`, sin lo cual Safari de iOS se queda con el gesto para hacer scroll de la página.
+- **Estado en coordenadas normalizadas de 0 a 1**, para que sobreviva a los cambios de escala entre la vista previa y el render final. El recuadro se pinta en **porcentajes**, de modo que no hay una sola conversión a píxeles en el dibujado y girar el teléfono a media edición no lo mueve.
 
-Al confirmar, se re-ejecutan el escalado y el encoder con el nuevo recuadro.
+Al confirmar, se re-ejecutan el escalado y el encoder con el nuevo recuadro, y se revocan el blob y el object URL anteriores de esa foto — después de repintar, no antes, o Safari deja la miniatura rota.
+
+#### De dónde sale la imagen de ~2×
+
+No existe de antes: el pipeline libera el `<img>` antes de comprimir y el canvas de salida después. **Se reconstruye al abrir el editor, releyendo el `File`, y se libera al cerrarlo.** Retener una por foto serían 2.4 MB × 30 compitiendo con las miniaturas por la memoria de la pestaña; reconstruirla cuesta ~250 ms una vez por apertura, y ese número está medido.
+
+**Necesita su propio contain, y esto es una trampa.** `escalar()` fuerza el canvas de salida a las dimensiones que reciba: **no preserva proporción** — el contain del pipeline vive en el cálculo del tamaño de salida, no dentro de `escalar()`. Pedirle 640×960 porque «2× el destino es 640×960» aplastaría a 2:3 toda foto que no lo sea, o sea una 3:4 y una 4:3. Y como el recuadro se pinta en porcentajes sobre esa imagen, **lo que se encuadra dejaría de ser lo que se recorta**: nada se ve roto, solo salen mal los encuadres. La previa además se ajusta a la pantalla del teléfono, no al marco, así que su contain es contra 640×960 y no contra 320×480.
+
+**El factor 2× lleva un supuesto de densidad que conviene tener escrito.** El lienzo mide ~352 pt de ancho: a 2× —el iPhone 11, que es el teléfono de referencia— pide 704 px de dispositivo y la previa da 640, o sea un **9 % de submuestreo**. No llega a un factor completo y en una foto sin detalle fino es imperceptible; en pelo o textura, se nota. En una pantalla **3×** pediría ~1056 px y el déficit sería del **40 %**. Si al medir en el teléfono el recuadro se ve suave, la salida no es subir la constante a 2.5 sino **derivarla de `devicePixelRatio`** —cuesta el mismo código y no vuelve a envejecer—, con un tope para que un 3× sobre una foto de 12 MP no dispare el tamaño del canvas.
+
+#### Contra qué espacio viven las coordenadas
+
+Contra `naturalWidth × naturalHeight`, o sea el bitmap **ya orientado por el EXIF** — que es exactamente el espacio **lógico** en el que `drawImage` interpreta su rectángulo fuente. Va escrito explícito en el código porque es el tipo de ambigüedad que produce recortes girados.
+
+Tiene una consecuencia útil: si el navegador subsamplea el bitmap real al decodificar, es él quien mapea el rectángulo al backing store, y aquí no hay nada que corregir.
+
+#### Arrastrar y acercar
+
+El recuadro **se arrastra y se acerca**. Solo arrastrar no bastaba: con relación fija y caja maximal, una 3:4 recorre el 11 % de su ancho y una 2:3 no se mueve en absoluto, así que el editor se abriría para no ofrecer nada justo en el caso que §6 dice que compensa.
+
+El zoom es un `<input type="range">` nativo: táctil, accesible, sin manijas diminutas bajo el pulgar. Su tope sale de la resolución, no de un número inventado — es el que deja el recorte en 320 px de fuente, porque más allá se estaría ampliando. Cuando ese tope es 1 —una foto que ya es 2:3 y apenas mayor que el marco— el control **se esconde** en vez de quedar muerto. Si en el celular el slider se siente ajeno, la salida es pinch de dos punteros sobre el mismo estado normalizado; el estado no cambia.
+
+#### Una foto que ya es 2:3
+
+El editor **se abre igual**, con la caja cubriendo la foto entera, porque sigue habiendo margen para acercarse a una cara. Si al confirmar el recuadro resulta ser la imagen completa, se guarda «sin recorte» y la foto sigue contando como completa. La comparación va **con tolerancia, nunca por igualdad**: la caja maximal de una 2:3 exacta sale de una división que en flotante da 0.9999999999999999, y comparar contra 1 guardaría como recorte la foto entera — un reproceso que no cambia un píxel y un botón «Quitar recorte» sin nada que quitar.
+
+#### El recorte es reversible
+
+«Quitar recorte» devuelve la foto a completa y la reprocesa desde el original. Sin eso, un recuadro mal hecho solo se deshacía quitando la foto de la tanda.
 
 ### Contrato HTTP
 
@@ -314,7 +363,9 @@ POST /delete            → {"n":"00000042.JPG"}
 
 **`onNotFound` tiene que estar definido y responder corto.** Cinco rutas y ningún catch-all significa que todo lo demás cae ahí, y no es hipotético: el navegador pide `/favicon.ico` solo, sin que nadie se lo mande — medido en Chrome. Un 404 con dos palabras es la respuesta correcta (el icono de pestaña sale genérico y ya); lo que no puede quedar es sin definir.
 
-> **Por eso la página nunca mete rutas nuevas en el historial.** El detalle de una foto usa `history.pushState` con la **misma** URL. Medido en Chrome: `/foto/3` lanza `SecurityError` en `file://` —por el origen `null`, que es coincidencia y no una protección— pero se **acepta sin quejarse sobre `http://`**. O sea que una ruta inventada pasaría todas las pruebas de escritorio y de LAN, y solo daría 404 en el marco, al recargar o compartir el enlace: el único entorno donde nadie va a estar depurando. Si alguna vez hace falta estado en la URL, va en el fragmento, que no viaja al servidor.
+> **Por eso la página nunca mete rutas nuevas en el historial.** Hay **dos** niveles empujados —rejilla → detalle → editor de recuadro— y los dos usan `history.pushState` con la **misma** URL. Medido en Chrome: `/foto/3` lanza `SecurityError` en `file://` —por el origen `null`, que es coincidencia y no una protección— pero se **acepta sin quejarse sobre `http://`**. O sea que una ruta inventada pasaría todas las pruebas de escritorio y de LAN, y solo daría 404 en el marco, al recargar o compartir el enlace: el único entorno donde nadie va a estar depurando. Si alguna vez hace falta estado en la URL, va en el fragmento, que no viaja al servidor.
+>
+> **Con dos niveles, quien navega es el botón, no la función de cierre.** El detalle podía permitirse llamar a `history.back()` desde su propio cierre porque su guard convierte en no-op el `popstate` que él mismo provoca. Ese truco se rompe al añadir el editor: su cierre dejaría el estado en nulo y el `popstate` de su propio `back()` cerraría también el detalle, saltándose dos niveles de un golpe. Así que las funciones de cierre solo desmontan y son los botones los que llaman a `history.back()` — el `popstate` encuentra entonces el editor todavía vivo y cierra exactamente un nivel.
 
 ### Dónde vive la página
 
@@ -325,7 +376,11 @@ POST /delete            → {"n":"00000042.JPG"}
 
 Con PROGMEM hay una sola imagen que flashear y es imposible que el firmware y su página queden desincronizados. Consecuencia para `web/`: el script de build no solo concatena a un HTML único, también lo gzipea y emite el array de C.
 
-**El array de C va a un archivo aparte, y ese archivo se decide antes de generarlo.** Tras la etapa 3 la página pesa 42.1 KB en claro y **14.2 KB gzipeados** con `gzip -9`. En flash es irrelevante —3 MB de partición—, pero como fuente de C son cinco caracteres por byte (`0xNN,`), o sea **~85 KB de texto que cambia entero cada vez que se toca una línea de la página**. Las opciones son `.gitignore` —y entonces el build tiene que ser reproducible o el repo no basta para flashear— o versionarlo sabiendo que va a ensuciar todos los diffs. Lo que no puede pasar es descubrirlo al hacer el primer commit.
+**El array de C va a un archivo aparte, y ese archivo se decide antes de generarlo.** Tras la etapa 4 la página pesa 65.2 KB en claro y **22.0 KB gzipeados** con `gzip -9` (eran 42.1 y 14.2 tras la etapa 3). En flash sigue siendo irrelevante —3 MB de partición—, pero **lo que importa es el crecimiento**, porque como fuente de C son cinco caracteres por byte (`0xNN,`): esos 22.0 KB son ya **~110 KB de texto que cambia entero cada vez que se toca una línea de la página**, y eran ~71 KB tras la etapa 3.
+
+Con ese número la decisión se aclara: `.gitignore` —y entonces **el build tiene que ser reproducible, o el repo no basta para flashear**— o versionarlo sabiendo que va a ensuciar todos los diffs. Lo que no puede pasar es descubrirlo al hacer el primer commit.
+
+**El empaquetado toma únicamente `web/index.html`.** `web/test/` es el arnés de regresión (ver su README) y no puede acabar en PROGMEM.
 
 ---
 
@@ -595,6 +650,8 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 | Plataforma PIO | pioarduino (arduino-esp32 3.x, activa) | `platformio/platform-espressif32` oficial, estancada en 2.x |
 | Servidor web | `ESP32Async/ESPAsyncWebServer` | `me-no-dev/…`, archivado ene-2025 |
 | Recorte en navegador | Código propio | Cropper.js (API rota entre v1/v2), Croppr.js (abandonada) |
+| Gesto del recuadro | Arrastrar con Pointer Events + slider de zoom nativo, tope por resolución | Solo arrastrar (una 2:3 no se movería y una 3:4 recorrería el 11 %), pinch de dos punteros (invisible, ~20 líneas más, WebKit sin medir) |
+| Sacar una foto de la tanda | «Quitar foto» en su detalle, con confirmación | Solo «Limpiar» (obligaba a rehacer la tanda entera por una foto en error) |
 | Config de TFT_eSPI | `build_flags` con `USER_SETUP_LOADED` | Editar `User_Setup.h` en la carpeta de la librería |
 
 ---
@@ -605,21 +662,21 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 
 1. **Arnés de diagnóstico, antes que nada.** Un HTML que carga una foto y reporta las dimensiones que devolvió el decodificador, el tag `0x0112` leído a mano de los bytes del JPEG, y la imagen sin transformar. Responde de forma medida —no supuesta— si el navegador ya aplicó la rotación y si hay subsampling con fotos grandes.
 
-   **Estado: hecho a medias, y la mitad que falta es la que importa.** El arnés existe, ya no en `web/test/` sino integrado en `web/index.html` detrás de `CFG.DIAG`, que se apaga en producción. Corrió sobre tres fotos reales y los resultados están en §4. Pero corrió **solo en Chromium** (el navegador integrado de VS Code sobre macOS). Falta Safari de macOS y sobre todo **Safari de iOS**, que es donde va a subir fotos la persona destinataria. **Hasta que ese paso no dé resultados, la orientación EXIF y el subsampling siguen siendo especulación.**
+   **Estado: hecho.** El arnés existe, ya no en `web/test/` sino integrado en `web/index.html` detrás de `CFG.DIAG`, que se apaga en producción. Corrió sobre fotos reales en Chromium y **en Safari de iOS sobre un iPhone 11**, que es el motor que importa; los resultados están en §4. Lo que queda abierto es acotado: el caso de transpose (EXIF = 5) solo se ha visto en Chromium, y el subsampling pasó a nota de alcance por falta de dispositivo.
 
 2. **Página web con redimensionado por Canvas**, en este orden: lector EXIF → escalador → encoder → rejilla y cola → editor de recuadro → capa de red → empaquetado.
 
-   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, y descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware).
+   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, y **editor de recuadro con «quitar foto»**.
 
-   **Falta:** rejilla y cola con multi-selección —hoy solo se procesa la primera foto seleccionada—, editor de recuadro, capa de red contra `/upload`, y el empaquetado (gzip → array de C en PROGMEM).
+   **Falta:** capa de red contra `/upload`, y el empaquetado (gzip → array de C en PROGMEM).
 
 3. **Repositorio en GitHub** con los dos documentos, `web/`, y GitHub Pages activado — sirve la página por HTTPS y permite probarla desde el celular real, no solo desde escritorio. **Es lo que desbloquea el punto 1**, porque Safari de iOS no va a abrir un `file://` de otra máquina.
 4. **Instalar PlatformIO** y armar el `platformio.ini` del BOM. Compila sin placa conectada; valida que todas las dependencias resuelvan. **Hecho** — build limpio verificado, ver el BOM.
 5. Formatear la SD en FAT32 y crear `/fotos/`. Al hacerlo, confirmar el tamaño de cluster (ver el BOM).
 
-Casos de prueba mínimos para los pasos 1 y 2: foto 4:3, 16:9, vertical de iPhone sin editar y sin pasar por WhatsApp (EXIF), una de 12 MP para cronometrar el escalado en celular, y una de 48 MP (8064×6048) para provocar el subsampling de Safari a propósito.
+Casos de prueba mínimos para los pasos 1 y 2: foto 4:3, 16:9, vertical de iPhone sin editar y sin pasar por WhatsApp (EXIF), y una de 12 MP para cronometrar el escalado en celular.
 
-De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5, todas en Chromium. **Sin correr:** la de 48 MP, cuya única razón de ser es provocar el subsampling de Safari, y por lo tanto no tiene sentido correrla en otro motor.
+De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en Chromium, y dos verticales de 8 y 12 MP con EXIF 6 en Safari de iOS. La de 48 MP (8064×6048) que figuraba aquí **sale de la lista**: su única razón de ser era provocar el subsampling de Safari y no hay dispositivo con el que generarla — ver la nota de alcance en §4.
 
 ### Requiere los componentes en mano, en este orden
 

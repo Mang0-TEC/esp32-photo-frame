@@ -34,6 +34,14 @@ mutar, confirmar, reversibilidad—, el historial de dos niveles, quitar una fot
 la renumeración de las posteriores, y que el bucle de la cola sobreviva a que se
 quite una foto a media tanda.
 
+Y la **capa de red**, sustituyendo `window.fetch`: la tanda completa, que **nunca
+haya dos peticiones en vuelo** —la concurrencia 1 de §4—, que la petición no lleve
+cabeceras propias, los códigos 413, 503, el 200 con cuerpo inválido, el timeout, el
+corte tras dos fallos de red seguidos y el reintento de solo las que fallaron, la
+verificación de integridad, que quitar o recortar una foto con su multipart en
+vuelo sea imposible, el relevo entre los dos bucles, y que con `CFG.DIAG = false`
+no quede rastro técnico en ningún texto visible.
+
 El conductor además recoge los `console.assert` de la propia página —los de la
 geometría del recorte, que corren tras `CFG.DIAG`— y los cuenta como fallos.
 
@@ -57,6 +65,14 @@ con un dedo se prueban en el teléfono. Los casos llaman a `mover()` y
 `{ lineas: [...], fallos: n }`. Corre en el mismo contexto que el script de la
 página, así que ve todo su ámbito: `cola`, `ed`, `abrirEditor`, `quitarFoto`.
 
-Para la **etapa 5** no hace falta servidor: los fallos de red y los reintentos
-parciales se provocan sustituyendo `window.fetch` dentro del archivo de casos,
-que es más determinista que un servidor de verdad y funciona igual sobre `file://`.
+La **capa de red** no necesita servidor: los fallos y los reintentos parciales se
+provocan sustituyendo `window.fetch` dentro del archivo de casos, que es más
+determinista que una placa y funciona igual sobre `file://`. El stub responde
+también a `/photo`, devolviendo lo que acaba de llegar por el multipart, así la
+verificación de integridad se ejercita entera.
+
+Sobre `file://` la página se cae sola a `CFG.BASE = null` —modo mock—, que es lo
+que deja intactas las comprobaciones de preparación. Los casos de red la fijan a
+`""`, que es el valor de producción, llaman a `aplicarModoRed()` y la restauran al
+terminar. Lo que **no** se prueba aquí es la pestaña en segundo plano: eso es
+teléfono.

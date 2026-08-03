@@ -303,6 +303,18 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@3.12.0` y `AsyncTCP@3.5.0`. **Al actualizar cualquiera de las tres aquí, sincronizar allá.** Si divergen, el banco deja de probar lo que el firmware va a correr — que es el único motivo de que ese mock esté en el ESP32 y no en Python. El archivo del banco lleva el aviso en su encabezado, pero eso se lee estando ya dentro; el desfase se produce editando **este** lado.
 
+#### Cómo se apunta la página al banco
+
+**La ruta preferente es LittleFS del propio ESP32** — `pio run -t uploadfs` desde `firmware/banco/`, que sirve `web/index.html` sin copiarlo. Ahí la página y el endpoint son el **mismo origen**, que es la configuración de producción: sin CORS, sin fragmento, y `CFG.BASE` con su valor por defecto.
+
+Para iterar rápido con la página abierta desde la Mac hay un override, y **solo funciona bajo `CFG.DIAG`**:
+
+```
+file:///…/web/index.html#marco=http://192.168.100.175
+```
+
+Va en el **fragmento** a propósito: no viaja al servidor, y por lo tanto no puede colarse como una ruta que el `onNotFound` tendría que atender. Ese camino exige compilar el banco con `-D BANCO_CORS`, que es una cabecera de banco y **no puede sobrevivir al firmware final**.
+
 **Afinación de `SPI_FREQUENCY`:** arrancar en 27 MHz para las primeras pruebas. Con imagen estable, subir a 40 y luego a 80. Si aparecen líneas o píxeles corridos, bajar un escalón. Es empírico y depende del largo de los cables.
 
 ### Nunca escribir a la SD desde el callback de upload
@@ -369,6 +381,8 @@ Consecuencia para la tabla de arriba, que mide presupuesto y no ocupación real:
 | 60 KB | 64 KB (2 clusters) | ~121,000 |
 
 Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
+
+**Y el caso medido cae del lado de los dos clusters.** El peso medio real de una tanda de 30 fotos de iPhone son **34.3 KB**, por encima de los 32,768 B del presupuesto, con un peor caso de 43.0 KB. O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el número que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
 
 **Verificar al preparar la tarjeta.** 32 KB es lo que trae de fábrica y lo que produce el SD Card Formatter oficial, pero macOS puede elegir otro tamaño al reformatear. Se confirma con `diskutil info /dev/diskNs1`, campo de tamaño de asignación.
 

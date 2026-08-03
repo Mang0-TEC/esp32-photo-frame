@@ -70,7 +70,7 @@ Se evaluó Google Drive como backend y **se descartó** por tres razones:
 | Ubicación de fotos | `/fotos/` — **nunca en la raíz** |
 | Nombres | `NNNNNNNN.JPG` — ocho dígitos, contador monótono en NVS |
 | Índice | `/manifest.txt` en la raíz, un nombre por línea |
-| Capacidad práctica | ~190,000 fotos a 40 KB (deja de ser restricción) |
+| Capacidad práctica | ~121,000 fotos al peso medio medido (deja de ser restricción) |
 
 **Por qué no la raíz.** No es por un límite de entradas: el famoso tope de 512 entradas en el directorio raíz es de **FAT16**, no de FAT32 — en FAT32 la raíz es una cadena de clusters ordinaria y crece dinámicamente igual que cualquier subdirectorio. Las razones reales son dos:
 
@@ -118,6 +118,7 @@ El ESP32 no puede reescalar una foto de 12 megapixeles — no le alcanza la memo
 4. Si a alguna le sobra demasiado negro, o el encuadre no es el que se quería, se toca su miniatura y se ajusta el recuadro a mano. Es opcional y es foto por foto; al confirmar se rehacen los pasos 3 y 5 solo para esa.
 5. Cada una se reencodea como JPEG dentro de su presupuesto de bytes.
 6. **Eso** es lo único que se sube al ESP32.
+7. Al tocar «Subir al marco» se suben **de una en una**, en el orden de la rejilla. Lo que suba se queda en la tarjeta aunque se cancele el resto.
 
 Desde la perspectiva de quien lo usa, simplemente eligió fotos y funcionaron. Esta pieza es la que hace que toda la arquitectura se sostenga, y es la más delicada del proyecto.
 
@@ -144,12 +145,15 @@ Cada foto de la tanda es un elemento con **identidad propia y estado propio**, n
 | `procesando` | Escalando o comprimiendo |
 | `lista` | Preparada, esperando a subir |
 | `error` | No se pudo preparar (archivo ilegible, formato que el navegador no abre) |
-| `subiendo` · `subida` · `fallo` | Estados de la capa de red |
+| `subiendo` | Su multipart está en vuelo. No se puede quitar ni recortar |
+| `subida` | Está en la tarjeta del marco. **Terminal** |
+| `fallo` | No se pudo subir. Reintentable, salvo el `413` |
 
 - **Un error en una foto no tumba la tanda.** Se marca esa, se sigue con la siguiente, y al final se dice cuántas fallaron.
-- **Elegir más fotos anexa, nunca reemplaza.** Volver al selector después de preparar diez y elegir tres más deja trece, no tres. Nadie va a intuir que abrir el selector destruye trabajo ya hecho —y con la capa de subida encima serían fotos ya listas para subir—, así que lo único que vacía la tanda es el botón de limpiar, que es un gesto explícito. Anexar al final además preserva «orden de selección = orden de subida».
+- **Elegir más fotos anexa, nunca reemplaza.** Volver al selector después de preparar diez y elegir tres más deja trece, no tres. Nadie va a intuir que abrir el selector destruye trabajo ya hecho —y son fotos ya listas para subir—, así que lo único que vacía la tanda es el botón de limpiar, que es un gesto explícito. Anexar al final además preserva «orden de selección = orden de subida».
+- **Las que ya están en el marco sí salen al elegir más, y no contradice lo anterior.** Ese invariante protege trabajo **no entregado**; una foto en `subida` está en la tarjeta y lo único que se pierde al soltarla es su miniatura. Es además lo que promete el aviso del tope —«súbelas y vuelve por las demás»—: sin esto, quien sube 30 se queda encerrado contra el tope salvo que descubra el botón de limpiar. **El orden importa:** el descarte ocurre solo después de confirmar que hay fotos nuevas y antes de calcular el hueco. Al revés, el mero gesto de abrir el selector y cancelar borraría el rastro de lo subido a cambio de nada.
 - **Se puede cancelar a media tanda.** Lo ya preparado se conserva —es trabajo válido— y las que faltaban quedan en `pendiente`, listas para continuar.
-- **Se puede quitar una foto sin vaciar la tanda.** Está en su detalle, junto a «Guardar JPEG», y con confirmación porque destruye trabajo ya preparado. Es la única salida para una foto en `error`, y en la etapa 5 lo será para una que falle al subir una y otra vez. Al quitarla se revoca su object URL y se repintan las **posteriores**, cuyo número visible sale de su posición en la cola.
+- **Se puede quitar una foto sin vaciar la tanda.** Está en su detalle, junto a «Guardar JPEG», y con confirmación porque destruye trabajo ya preparado. Es la única salida para una foto en `error` y para una que da `413`. Al quitarla se revoca su object URL y se repintan las **posteriores**, cuyo número visible sale de su posición en la cola. **No** se puede quitar una en `procesando` ni en `subiendo`: en ambos casos hay una promesa en vuelo que va a volver a escribir sobre ese elemento. Y sobre una ya `subida` el texto de la confirmación dice explícitamente que **no** la borra del marco.
 - **El bucle de preparación busca la primera `pendiente`; no recorre el arreglo.** Es lo que lo hace inmune a que se anexen fotos a media tanda y a que se quite una: un `splice` bajo un iterador por índice corre el resto y deja un elemento sin visitar, en `pendiente` para siempre. A cambio, el cuerpo del bucle **tiene** que sacar al elemento de `pendiente` en su primera línea, o gira sobre él.
 - **Tope de 30 fotos en la tanda.** No es memoria de los archivos preparados —30 × 32 KB son 960 KB— sino de las miniaturas: 30 bitmaps decodificados de 320×480 son ~18 MB vivos en la rejilla. El tope existe sobre todo porque el selector de iOS tiene «Seleccionar todo» a un toque, y vaciar un álbum de 800 fotos mataría la pestaña a media tanda, perdiendo el trabajo ya hecho y sin explicación. Al pasarse se avisa en lenguaje llano y se aceptan las que caben.
 
@@ -380,6 +384,61 @@ subida que recibe `503` se reintenta igual que una que falló por red.
 > **Por eso la página nunca mete rutas nuevas en el historial.** Hay **dos** niveles empujados —rejilla → detalle → editor de recuadro— y los dos usan `history.pushState` con la **misma** URL. Medido en Chrome: `/foto/3` lanza `SecurityError` en `file://` —por el origen `null`, que es coincidencia y no una protección— pero se **acepta sin quejarse sobre `http://`**. O sea que una ruta inventada pasaría todas las pruebas de escritorio y de LAN, y solo daría 404 en el marco, al recargar o compartir el enlace: el único entorno donde nadie va a estar depurando. Si alguna vez hace falta estado en la URL, va en el fragmento, que no viaja al servidor.
 >
 > **Con dos niveles, quien navega es el botón, no la función de cierre.** El detalle podía permitirse llamar a `history.back()` desde su propio cierre porque su guard convierte en no-op el `popstate` que él mismo provoca. Ese truco se rompe al añadir el editor: su cierre dejaría el estado en nulo y el `popstate` de su propio `back()` cerraría también el detalle, saltándose dos niveles de un golpe. Así que las funciones de cierre solo desmontan y son los botones los que llaman a `history.back()` — el `popstate` encuentra entonces el editor todavía vivo y cierra exactamente un nivel.
+
+### La capa de red
+
+**Bucle propio, no dentro del de preparación, y los dos nunca corren a la vez.** Preparar y subir tienen ritmos distintos —87 ms por foto contra el tiempo de red— y esto permitiría solaparlos, pero no obliga a hacerlo, y la tanda de 30 se prepara entera en 2711 ms medidos. Solapar compra esos dos segundos y paga con dos cancelaciones simultáneas, dos significados para el mismo botón, y la carrera de que el bucle de subida agarre un elemento que el reproceso del recorte está a punto de reemplazar.
+
+**La exclusión mutua es de dos lados, y la segunda mitad es la que se olvida.** Cada bucle mira las dos banderas — si solo la mirase el de subida, elegir fotos a media tanda arrancaría a decodificar 12 MP en el hilo principal con un multipart en vuelo. Y con esa guarda puesta hace falta su contrapeso: **el bucle de subida, al terminar, tiene que relanzar el de preparación**, o lo que se eligió mientras subía se queda en `pendiente` para siempre, porque nadie más va a dispararlo.
+
+La dirección contraria no necesita contrapeso: **la subida siempre la dispara un toque**, nunca el final de la preparación. Una tanda no se sube sola.
+
+**No hay subida de una foto suelta.** El botón del detalle sube la tanda, igual que el de la rejilla. No es pereza: el orden de subida es el del manifiesto y el de reproducción en el marco (§3), así que subir una foto fuera del orden de la rejilla lo rompería.
+
+#### Qué se hace con cada respuesta
+
+| Código | Qué significa | Reintentable | Qué se dice |
+|---|---|---|---|
+| `200` con `{"ok":true,"n":…}` | subida | — | nada; el mosaico queda con su marca |
+| `200` con otra cosa | el marco contestó algo que no es el contrato | sí | «El marco contestó algo que no se entiende.» |
+| `400` | **bug de la página**: campo distinto de «foto», o cuerpo vacío | sí | «El marco no aceptó esta foto.» |
+| `413` | la foto se pasó del tope duro | **no** | «Pesó más de lo que el marco acepta. Quítala de la tanda.» |
+| `503` | **bug de la página**: dos subidas solapadas | sí | «El marco estaba ocupado. Inténtalo otra vez.» |
+| `507` | tarjeta llena — **corta la tanda entera** | no | «El marco se quedó sin espacio.» |
+| otro | — | sí | «No se pudo subir esta foto.» |
+| red o timeout | — | sí | «No se pudo conectar con el marco.» |
+
+**El `413` tiene que distinguirse de «se cayó el WiFi», y no solo en el texto: las acciones son distintas.** Reintentar no arregla una foto que pesa de más, así que su única salida es quitarla de la tanda, y eso es lo que dice el mensaje. El mensaje no lleva ningún número — el tope real se puede mover, y en producción nada técnico es visible.
+
+**El `400` y el `503` no son problema de quien sube fotos: son de esta página.** La concurrencia 1 es disciplina del cliente, así que un `503` significa que el cliente la incumplió. El mensaje que se ve es genérico, pero bajo diagnóstico la barra lo grita con el código y con de quién es el bug.
+
+**Corte tras dos fallos de red seguidos.** Con el módem apagado, 30 fotos por el timeout serían cinco minutos de machacar. Las que no se llegaron a intentar **se quedan en `lista`, no en `fallo`**, así que volver a tocar «Subir al marco» las retoma tal cual.
+
+**Sin reintento automático.** Un reintento silencioso enmascara justo los dos códigos que tienen que gritar, y ante una caída real de red el segundo intento inmediato falla igual. El reintento es un toque, y devuelve a `lista` solo los fallos que se pueden reintentar — «se reintentan solo esas, no la tanda completa», sin una segunda ruta de código.
+
+#### Detalles que no se deducen
+
+**Ninguna cabecera propia en la petición de subida.** `multipart/form-data` es *safelisted* y no dispara preflight; basta un `X-Debug` para que salga un `OPTIONS` que, con cinco rutas y sin catch-all, cae en `onNotFound` → 404, y la subida se rompe sin explicación. Lo mismo vale para el `GET` de verificación: **nada de `cache:"no-store"` en el fetch**, porque `Cache-Control` no es una cabecera safelisted. El `no-store` va en la **respuesta**, que es donde lo pone el servidor.
+
+**Timeout por foto con `AbortController`, no con `AbortSignal.timeout()` ni `AbortSignal.any()`** — el segundo es Safari 17.4+, y la única ruta por la que entran fotos al marco no se apuesta a una versión de WebKit. El valor es la suma de los peores casos redondeada hacia arriba: primera conexión de Safari con handshake, el multipart sobre LAN, y la escritura de la tarjeta, que puede ser de cientos de milisegundos cuando el bloque necesita borrado previo. Los timers estrangulados en segundo plano disparan **tarde, nunca antes**, así que no puede haber abortos espurios por eso.
+
+**Cancelar corta al terminar la foto en curso; no aborta el multipart en vuelo.** Abortarlo deja la duda de si la foto aterrizó o no, y a 34 KB la espera es de menos de un segundo. **Lo ya subido se conserva**: está en la tarjeta del marco y es trabajo válido.
+
+**La pestaña en segundo plano no lleva lógica propia, y es una decisión.** En iOS el JS se suspende y el `fetch` puede morir o sobrevivir; las dos salidas ya están cubiertas. Si muere, esa foto queda en `fallo` reintentable y el corte por dos seguidos evita que la tanda se desangre; si sobrevive, el bucle continúa al despertar. Bajo diagnóstico se anota si la pestaña estuvo oculta durante la subida, que es el dato que falta para decidir si algún día hace falta más.
+
+**El progreso es por foto, nunca dentro del archivo.** `fetch()` no reporta progreso de subida, y los *request streams* con `duplex:"half"` no están en WebKit. A 34 KB sobre LAN el progreso intra-archivo duraría décimas de segundo. Nada de `XMLHttpRequest` por eso.
+
+**El orden del manifiesto no se comprueba en producción.** Lo garantizan la concurrencia 1 y el contador monótono del ESP32 (§3), y un desajuste no produciría ninguna acción que la persona pueda tomar. Bajo diagnóstico sí hay un botón que lo verifica contra `/list`.
+
+**La verificación de integridad es síncrona dentro del bucle, y detrás del diagnóstico.** Vuelve a pedir la foto por `/photo` y compara los bytes contra el blob que se subió. Síncrona no es descuido: un servidor que comparta el buffer entre `/photo` y `/upload` responde `503` a las lecturas mientras hay una subida en curso, así que lanzarla en paralelo para no frenar la tanda se comería `503` sistemáticos. Y **un `404` aquí no es corrupción** —es que el servidor no retuvo esa foto—, así que se reporta distinto de «difiere en el byte N»; confundirlos es salir a perseguir un bug que no existe.
+
+**La base del servidor es `""` — mismo origen — y ese es el valor de producción.** La compuerta que decide si los botones de subir existen se compara **contra `null`, jamás por veracidad**: `""` es *falsy*, y un `if (base)` apagaría los botones justo en el marco, que es el único sitio donde tienen que estar. Abierta a mano desde el disco (`file://`) la página se cae sola a `null`, o sea al modo mock donde «Guardar JPEG» es la acción; y bajo diagnóstico se puede apuntar a otra máquina por el **fragmento** de la URL, que no viaja al servidor.
+
+#### Pendiente: borrar y gestionar lo ya cargado
+
+`POST /delete` está en el contrato y **todavía no lo llama nadie**. Quitar de la tanda una foto ya subida la saca de esta pantalla pero no del marco, y el texto de la confirmación lo dice. Borrar de verdad llega con la galería de lo ya cargado, cuando haya tarjeta.
+
+Hay un hallazgo medido en placa que no se puede perder mientras tanto: **el cuerpo de `/delete` debe ir con `Content-Type: application/json`**. Con `x-www-form-urlencoded`, `AsyncWebServer` parsea el cuerpo como formulario, el callback de cuerpo nunca lo ve, y el servidor contesta `200` sobre un borrado que no ocurrió.
 
 ### Dónde vive la página
 
@@ -666,6 +725,8 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 | Recorte en navegador | Código propio | Cropper.js (API rota entre v1/v2), Croppr.js (abandonada) |
 | Gesto del recuadro | Arrastrar con Pointer Events + slider de zoom nativo, tope por resolución | Solo arrastrar (una 2:3 no se movería y una 3:4 recorrería el 11 %), pinch de dos punteros (invisible, ~20 líneas más, WebKit sin medir) |
 | Sacar una foto de la tanda | «Quitar foto» en su detalle, con confirmación | Solo «Limpiar» (obligaba a rehacer la tanda entera por una foto en error) |
+| Capa de subida | `fetch` + `AbortController`, bucle propio excluyente con el de preparación, progreso por foto | Solaparla con la preparación (dos segundos a cambio de dos cancelaciones simultáneas), `XMLHttpRequest` por el progreso intra-archivo (décimas de segundo a 34 KB), reintento automático (enmascara el `400` y el `503`) |
+| Subir una foto suelta | No existe: el botón sube la tanda en orden de rejilla | Subir la del detalle primero, que rompería «orden de subida = orden del manifiesto» |
 | Config de TFT_eSPI | `build_flags` con `USER_SETUP_LOADED` | Editar `User_Setup.h` en la carpeta de la librería |
 
 ---
@@ -680,9 +741,9 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 
 2. **Página web con redimensionado por Canvas**, en este orden: lector EXIF → escalador → encoder → rejilla y cola → editor de recuadro → capa de red → empaquetado.
 
-   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, y **editor de recuadro con «quitar foto»**.
+   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, editor de recuadro con «quitar foto», y **la capa de red contra `/upload`** — bucle propio con concurrencia 1, timeout por foto, los ocho desenlaces de la tabla de §4, corte por red caída, reintento de solo las que fallaron y verificación de integridad bajo diagnóstico. 82 comprobaciones automatizadas en Chrome, 36 de ellas de la capa de red.
 
-   **Falta:** capa de red contra `/upload`, y el empaquetado (gzip → array de C en PROGMEM).
+   **Falta:** el empaquetado (gzip → array de C en PROGMEM), y medir la subida en el iPhone contra el banco.
 
 3. **Repositorio en GitHub** con los dos documentos, `web/`, y GitHub Pages activado — sirve la página por HTTPS y permite probarla desde el celular real, no solo desde escritorio. **Es lo que desbloquea el punto 1**, porque Safari de iOS no va a abrir un `file://` de otra máquina.
 4. **Instalar PlatformIO** y armar el `platformio.ini` del BOM. Compila sin placa conectada; valida que todas las dependencias resuelvan. **Hecho** — build limpio verificado, ver el BOM.
@@ -699,4 +760,5 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 8. Confirmar pinout del PN2222A (zócalo hFE).
 9. Afinar velocidad SPI (27 → 40 → 80 MHz).
 10. Confirmar dirección I2C del BH1750.
-11. Integración y modelado de la carcasa.
+11. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama. Va aquí y no antes porque sin tarjeta no hay nada que gestionar: hoy quitar de la tanda una foto ya subida la saca de la pantalla y no del marco, y el texto de la confirmación lo dice. El hallazgo que no se puede perder mientras tanto está en §4 — el `Content-Type` del cuerpo.
+12. Integración y modelado de la carcasa.

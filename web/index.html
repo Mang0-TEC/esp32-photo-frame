@@ -110,6 +110,11 @@
     border-radius:9px;background:rgba(0,0,0,.6);
     font-size:10.5px;line-height:18px;
   }
+  /* Ya en el marco: la miniatura se atenúa en vez de desaparecer. Sigue siendo la
+     foto, pero deja de ser lo que reclama atención en la rejilla. */
+  .mosaico.subida img{opacity:.55}
+  .mosaico .marca.hecha{background:rgba(24,106,59,.85)}
+  .mosaico .marca.mala{background:rgba(155,28,28,.9);font-weight:700}
   .mosaico .fallo{
     position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     font-size:11.5px;line-height:1.3;padding:0 6px;text-align:center;color:#f2b8b8;
@@ -129,7 +134,7 @@
   table.diag td{text-align:right;padding:3px 0;font-variant-numeric:tabular-nums}
   .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
 
-  /* flex-wrap y una base de 120 px: con «Subir al marco» de la etapa 5 son tres
+  /* flex-wrap y una base de 120 px: con «Subir al marco» son tres
      botones, y a 315 px de ancho útil no caben en una fila. */
   .actions{display:flex;gap:10px;flex-wrap:wrap}
   .actions button{
@@ -195,6 +200,7 @@
     <p class="hint" id="resumenTanda" hidden></p>
     <div id="diagFiles" hidden>
       <button type="button" class="btn-min" id="btnProbarFiles">Releer archivos</button>
+      <button type="button" class="btn-min" id="btnProbarOrden" hidden>Comprobar orden</button>
       <p class="hint" id="salidaFiles"></p>
     </div>
   </div>
@@ -302,8 +308,32 @@ const CFG = {
   MAX_TANDA: 30,
 
   DIAG: true,             // panel de diagnóstico: false para producción
-  ENDPOINT: null          // etapa 5: "/upload". null → el botón de subir no existe
+
+  /* BASE del servidor, no una ruta: se le pegan "/upload" y "/photo".
+       ""   → mismo origen. ES EL VALOR DE PRODUCCIÓN: la página la sirve el ESP32.
+       null → sin red, y los botones de subir no se pintan.
+     LA COMPUERTA VA SIEMPRE CONTRA null, jamás por veracidad: "" es falsy, y un
+     `if (CFG.BASE)` apagaría los botones justo en el marco. Ver aplicarModoRed(). */
+  BASE: "",
+
+  /* Timeout por foto. Suma de los peores casos, redondeada hacia arriba: primera
+     conexión de Safari con handshake (~1 s), 34 KB de multipart sobre LAN
+     (décimas), y la escritura de la SD, que en el banco son 30 ms simulados pero
+     en el firmware real puede ser de cientos cuando el bloque necesita borrado
+     previo. Un orden de magnitud de margen, y aun así corta rápido con el WiFi
+     caído. Los timers estrangulados en segundo plano disparan TARDE, nunca antes,
+     así que no puede haber abortos espurios por eso. */
+  TIMEOUT_MS: 10000
 };
+
+/* Abierta a mano desde el disco no hay marco al que subir: se cae al modo mock, que
+   es lo que hace útil «Guardar JPEG». En el marco el protocolo es http. */
+if (location.protocol === "file:") CFG.BASE = null;
+/* Banco de pruebas, SOLO bajo diagnóstico y por el FRAGMENTO, que no viaja al
+   servidor (§4). El valor de producción es el que está escrito arriba; esto es un
+   override que no deja rastro:
+     file:///…/web/index.html#marco=http://192.168.100.175 */
+if (CFG.DIAG && location.hash.startsWith("#marco=")) CFG.BASE = location.hash.slice(7);
 
 const TOPE_FIRMWARE = 64 * 1024;   // el callback de upload responde 413 por encima
 
@@ -318,12 +348,12 @@ const $ = id => document.getElementById(id);
 /* ─────────────────────────────────────────────────────────────
    0. LA COLA
    Cada foto es un elemento con identidad y estado propios, NO una posición en un
-   arreglo. Es lo que permite que la etapa 5 reintente solo las que fallaron al
+   arreglo. Es lo que permite reintentar solo las que fallaron al
    subir, como exige §4.
    ───────────────────────────────────────────────────────────── */
 const ESTADO = {
   PENDIENTE:"pendiente", PROCESANDO:"procesando", LISTA:"lista", ERROR:"error",
-  SUBIENDO:"subiendo", SUBIDA:"subida", FALLO:"fallo"   // los tres últimos: etapa 5
+  SUBIENDO:"subiendo", SUBIDA:"subida", FALLO:"fallo"   // los tres últimos: la red
 };
 
 /* item = {
@@ -335,14 +365,22 @@ const ESTADO = {
      sw, sh, dstW, dstH, maxBytes, q, iters, pasos, exif, sof, entradaBytes,
      tDecode, tEscala, tEncode, tTotal,
      aviso,         texto del aviso de franjas, o null — se calcula al preparar
-     error,         mensaje en lenguaje llano si estado === ERROR
-     nombreRemoto   etapa 5: el "00000042.JPG" que devuelva el ESP32
-   } */
-const cola = { items: [], seq: 0, corriendo: false, cancelado: false };
+     error,         mensaje EN LENGUAJE LLANO si estado es ERROR o FALLO
+     motivo,        el mismo fallo en técnico. Solo se pinta bajo CFG.DIAG
+     reintentable,  false en los fallos que reintentar no puede arreglar (413)
+     nombreRemoto,  el "00000042.JPG" que devolvió el ESP32
+     tSubida, verif, oculta    diagnóstico de la subida
+   }
+
+   Los dos bucles —correrCola() y correrSubidas()— NUNCA corren a la vez, y la
+   exclusión es de dos lados: cada uno mira las dos banderas. Ver correrSubidas(). */
+const cola = { items: [], seq: 0, corriendo: false, cancelado: false,
+               subiendo: false, cancelSub: false };
 
 const nuevoItem = file => ({
   id: ++cola.seq, file, estado: ESTADO.PENDIENTE,
-  recorte: null, blob: null, url: null, aviso: null, error: null, nombreRemoto: null
+  recorte: null, blob: null, url: null, aviso: null, error: null,
+  motivo: null, reintentable: false, nombreRemoto: null
 });
 
 const cuenta = est => cola.items.filter(i => i.estado === est).length;
@@ -648,7 +686,13 @@ async function procesar(file, recorte = null){
 const ceder = () => new Promise(r => setTimeout(r, 0));
 
 async function correrCola(){
-  if (cola.corriendo) return;
+  /* `|| cola.subiendo` no es simetría cosmética: sin él, elegir fotos a media
+     subida —que es un gesto que la página habilita, y que además descarta las ya
+     subidas— llama a arrancarCola() sin condiciones y se pone a decodificar 12 MP
+     en el hilo principal con un fetch en vuelo. Su contrapeso obligatorio es la
+     llamada a arrancarCola() del finally de correrSubidas(): con esta guarda y sin
+     aquélla, lo elegido durante la subida se queda en PENDIENTE para siempre. */
+  if (cola.corriendo || cola.subiendo) return;
   cola.corriendo = true; cola.cancelado = false;
   try {
     for (;;) {
@@ -694,6 +738,185 @@ async function correrCola(){
    interfaz con el barrido puesto para siempre. */
 const arrancarCola = () => correrCola().catch(err => { console.error(err); pintarBarra(true); });
 
+/* ─────────────────────────────────────────────────────────────
+   5-bis. LA CAPA DE RED — POST /upload
+   Bucle propio, no dentro de correrCola(): preparar y subir tienen ritmos
+   distintos, pero sobre todo tienen cancelaciones distintas. §4 no obliga a
+   solaparlos —pide preparación secuencial y concurrencia de subida 1— y la tanda
+   de 30 se prepara en 2711 ms medidos. Solapar compra dos segundos y paga con dos
+   cancelaciones simultáneas y con la carrera de que el bucle agarre un item que
+   reprocesarConRecorte() está a punto de reemplazar.
+   ───────────────────────────────────────────────────────────── */
+const RE_NOMBRE = /^[0-9]{8}\.JPG$/;    // el mismo patrón que valida el ESP32 (§4)
+
+/* item.error es lo que lee la persona; item.motivo es lo mismo en técnico y SOLO se
+   pinta dentro de un if (CFG.DIAG). item.bug marca los dos códigos que no son
+   problema de nadie más que de esta página. */
+function marcarFallo(item, texto, motivo, opts = {}){
+  item.estado = ESTADO.FALLO;
+  item.error  = texto;
+  item.motivo = motivo;
+  item.bug    = !!opts.bug;
+  item.reintentable = opts.reintentable !== false;
+  console.error("[subida] " + motivo);
+  return { esRed: !!opts.esRed, corte: !!opts.corte };
+}
+
+/* Verificación de integridad: DETRÁS de CFG.DIAG y SÍNCRONA dentro del bucle. Lo
+   segundo no es descuido — el banco comparte buffer entre /photo y /upload, así que
+   lanzarla en paralelo con la siguiente subida se comería 503 sistemáticos. Aquí el
+   servidor ya soltó el buffer.
+
+   SIN la opción cache:"no-store" del fetch: es la trampa del preflight llevada al
+   GET, porque Cache-Control no es una cabecera safelisted. El no-store va en la
+   RESPUESTA y el banco ya lo pone; sin él Safari serviría la foto de caché y la
+   comparación pasaría siempre —incluso con el multipart corrompiendo bytes—. */
+async function verificarIntegridad(item){
+  try {
+    const res = await fetch(`${CFG.BASE}/photo?n=${item.nombreRemoto}`);
+    if (res.status === 404) {
+      /* NO es corrupción, y la distinción importa: el banco solo retiene lo que le
+         cabe, y el peor caso medido (43.0 KB) es una observación, no una cota. Se
+         nombra al banco para no salir a perseguir un bug que no existe. */
+      item.verif = `no retenida por el banco · ${kb(item.blob.size)} (404)`;
+      return;
+    }
+    if (!res.ok) { item.verif = "HTTP " + res.status; return; }
+    const a = new Uint8Array(await res.arrayBuffer());
+    const b = new Uint8Array(await item.blob.arrayBuffer());
+    if (a.length !== b.length) { item.verif = `tamaño ${a.length} ≠ ${b.length}`; return; }
+    let i = 0;
+    while (i < a.length && a[i] === b[i]) i++;
+    item.verif = i === a.length ? "ok · " + kb(a.length) : "DIFIERE en el byte " + i;
+  } catch (err) { item.verif = err.name; }
+}
+
+async function subirUno(item){
+  const fd = new FormData();
+  /* El campo se llama "foto" (§4). Nombre de archivo neutro a propósito: el ESP32
+     asigna el nombre real desde su contador en NVS, y el del selector solo metería
+     caracteres ajenos en la cabecera multipart. */
+  fd.append("foto", item.blob, "foto.jpg");
+
+  /* AbortController con setTimeout, y no AbortSignal.timeout() ni AbortSignal.any():
+     el segundo es Safari 17.4+, y la única ruta por la que entran fotos al marco no
+     se apuesta a una versión de WebKit. La bandera distingue el vencimiento de un
+     aborto de la persona sin depender de abort(reason). */
+  const ctrl = new AbortController();
+  let expiro = false;
+  const reloj = setTimeout(() => { expiro = true; ctrl.abort(); }, CFG.TIMEOUT_MS);
+  const t0 = performance.now();
+  const ocultaAlEmpezar = document.visibilityState === "hidden";
+
+  try {
+    /* NINGUNA CABECERA PROPIA. multipart/form-data es safelisted y no dispara
+       preflight; basta un X-Debug para que salga un OPTIONS, que con cinco rutas y
+       sin catch-all cae en onNotFound → 404 y la subida se rompe sin explicación. */
+    const res = await fetch(CFG.BASE + "/upload",
+                            { method: "POST", body: fd, signal: ctrl.signal });
+    item.tSubida = performance.now() - t0;
+
+    if (res.status === 200) {
+      const j = await res.json().catch(() => null);
+      if (!j || j.ok !== true || !RE_NOMBRE.test(j.n || ""))
+        return marcarFallo(item, "El marco contestó algo que no se entiende.",
+                           "200 con cuerpo inválido");
+      item.nombreRemoto = j.n;
+      item.estado = ESTADO.SUBIDA;
+      item.error = item.motivo = null;
+      if (CFG.DIAG) await verificarIntegridad(item);
+      return {};
+    }
+    if (res.status === 400)
+      return marcarFallo(item, "El marco no aceptó esta foto.",
+        "400 — campo distinto de «foto», o cuerpo vacío", { bug: true });
+    if (res.status === 413)
+      // Reintentar no puede arreglarlo: la salida es «Quitar foto», y el mensaje lo
+      // dice. Sin número — el tope lo mueve /dbg?tope= y en producción nada técnico
+      // es visible.
+      return marcarFallo(item, "Esta foto pesó más de lo que el marco acepta. Quítala de la tanda.",
+        `413 — ${kb(item.blob.size)}`, { reintentable: false });
+    if (res.status === 503)
+      return marcarFallo(item, "El marco estaba ocupado. Inténtalo otra vez.",
+        "503 — dos subidas solapadas. La concurrencia 1 es disciplina del CLIENTE",
+        { bug: true });
+    if (res.status === 507)
+      return marcarFallo(item, "El marco se quedó sin espacio.", "507 — tarjeta llena",
+        { reintentable: false, corte: true });
+    return marcarFallo(item, "No se pudo subir esta foto.", "HTTP " + res.status);
+  } catch (err) {
+    item.tSubida = performance.now() - t0;
+    return marcarFallo(item, "No se pudo conectar con el marco.",
+      expiro ? `sin respuesta en ${CFG.TIMEOUT_MS / 1000} s` : err.name, { esRed: true });
+  } finally {
+    clearTimeout(reloj);
+    item.oculta = ocultaAlEmpezar || document.visibilityState === "hidden";
+  }
+}
+
+/* Repinta el mosaico, la barra y —si hay un detalle abierto— ese detalle, sea o no
+   el de la foto en curso: durante la subida los botones de recorte se inhabilitan y
+   el detalle abierto suele ser el de otra foto. */
+function repintar(item){
+  pintarItem(item); pintarBarra();
+  const d = detalleId !== null && cola.items.find(i => i.id === detalleId);
+  if (d) pintarDetalle(d);
+}
+
+async function correrSubidas(){
+  if (cola.subiendo || cola.corriendo) return;
+  cola.subiendo = true; cola.cancelSub = false;
+  let seguidosRed = 0;
+  try {
+    for (;;) {
+      /* Cancelar corta al TERMINAR la foto en curso; no aborta el multipart en
+         vuelo. Abortarlo deja la duda de si la foto aterrizó o no, y a 34 KB la
+         espera es de menos de un segundo. Lo ya subido se conserva: está en la SD
+         del marco y es trabajo válido. */
+      if (cola.cancelSub) break;
+      const item = cola.items.find(i => i.estado === ESTADO.LISTA);
+      if (!item) break;
+
+      // Primera línea del cuerpo, por el mismo motivo que en correrCola(): un item
+      // que saliera de aquí todavía en LISTA se volvería a elegir eternamente.
+      item.estado = ESTADO.SUBIENDO;
+      repintar(item);
+
+      const r = await subirUno(item);
+      seguidosRed = r.esRed ? seguidosRed + 1 : 0;
+      repintar(item);
+
+      /* El 507 corta en el acto, y dos fallos de red seguidos también: con el módem
+         apagado, 30 fotos × 10 s serían cinco minutos de machacar. Las que no se
+         llegaron a intentar siguen en LISTA —no en FALLO—, así que «Subir al marco»
+         las retoma tal cual. */
+      if (r.corte || seguidosRed >= 2) break;
+    }
+  } finally {
+    cola.subiendo = false;
+    pintarBarra();
+    /* Contrapeso de la guarda de correrCola(): lo que se eligió durante la subida
+       quedó en PENDIENTE y nadie más lo va a disparar. Va DESPUÉS de soltar la
+       bandera, o esa guarda rechaza esta misma llamada. */
+    arrancarCola();
+  }
+}
+
+const arrancarSubidas = () => correrSubidas().catch(err => { console.error(err); pintarBarra(); });
+
+/* ÚNICO punto de entrada de la subida, para «Subir al marco» y para «Reintentar».
+   Los FALLO reintentables vuelven a LISTA y el bucle los toma: se reintentan «solo
+   las que fallaron», como pide §4, sin una segunda ruta de código.
+
+   NO hay subida de una foto suelta, y no es pereza: el orden de subida es el del
+   manifiesto y el de reproducción en el marco (§3), así que subir una fuera del
+   orden de la rejilla lo rompería. Todo pasa por el mismo bucle. */
+function subirTanda(){
+  for (const i of cola.items)
+    if (i.estado === ESTADO.FALLO && i.reintentable) { i.estado = ESTADO.LISTA; pintarItem(i); }
+  arrancarSubidas();
+}
+
 /* Re-ejecuta el pipeline de una foto YA preparada con otro recorte. `recorte` en
    null la devuelve a completa, que es lo que hace «Quitar recorte».
 
@@ -737,7 +960,7 @@ async function reprocesarConRecorte(item, recorte){
 }
 
 /* Saca una foto de la tanda. Existe porque una en `error` solo se podía quitar
-   vaciando la tanda entera, y porque la etapa 5 necesita poder descartar una que
+   vaciando la tanda entera, y porque hay que poder descartar una que
    falle al subir una y otra vez.
 
    INVARIANTE que hoy hace innecesario cualquier guard contra la cola: esto solo es
@@ -748,8 +971,15 @@ function quitarFoto(id){
   const i = cola.items.findIndex(it => it.id === id);
   if (i < 0) return;
   const item = cola.items[i];
-  if (item.estado === ESTADO.PROCESANDO) return;   // hay un reproceso en vuelo
-  if (!confirm("¿Quitar esta foto de la tanda?")) return;
+  // Un reproceso o un multipart en vuelo: en los dos casos hay una promesa que va a
+  // volver a escribir sobre este item, y su object URL se quedaría sin revocar.
+  if (item.estado === ESTADO.PROCESANDO || item.estado === ESTADO.SUBIENDO) return;
+  /* Una foto ya subida se saca de la tanda pero NO del marco: decirlo es la
+     diferencia entre una acción entendida y una sorpresa. Borrar del marco es otra
+     cosa, va con POST /delete y llega con la gestión de las fotos ya cargadas. */
+  if (!confirm(item.estado === ESTADO.SUBIDA
+        ? "Esta foto ya está en el marco. Quitarla de aquí no la borra del marco. ¿Quitarla de la tanda?"
+        : "¿Quitar esta foto de la tanda?")) return;
 
   cerrarDetalle();
   // Fuera del DOM ANTES de revocar, como en limpiarTanda().
@@ -851,7 +1081,17 @@ function filasDiag(r){
     ["decodificar", ms(r.tDecode)],
     ["escalar", ms(r.tEscala)],
     ["comprimir", ms(r.tEncode)],
-    ["total", "<b>" + ms(r.tTotal) + "</b>"]
+    ["total", "<b>" + ms(r.tTotal) + "</b>"],
+
+    // ── La capa de red. Todo esto vive detrás de CFG.DIAG y nada de ello aparece
+    //    en producción, ni siquiera el nombre que asignó el marco.
+    ...(r.nombreRemoto ? [["nombre en el marco", r.nombreRemoto]] : []),
+    ...(r.tSubida != null
+        ? [["subida", ms(r.tSubida) + (r.oculta ? " · <span class='warn'>pestaña oculta</span>" : "")]]
+        : []),
+    ...(r.verif ? [["verificación",
+        `<span class="${r.verif.startsWith("ok") ? "ok" : r.verif.startsWith("no retenida") ? "warn" : "err"}">${r.verif}</span>`]] : []),
+    ...(r.motivo ? [["motivo del fallo", `<span class="err">${r.motivo}</span>`]] : [])
   ];
 }
 
@@ -879,12 +1119,26 @@ function pintarItem(item){
   const n = cola.items.indexOf(item) + 1;
   const num = `<span class="num">${n}</span>`;
 
-  if (item.estado === ESTADO.LISTA) {
-    el.className = "mosaico lista";
-    el.innerHTML =
-      `<img src="${item.url}" alt="" loading="lazy" decoding="async">` + num +
-      (item.aviso ? `<span class="marca">franjas</span>` : "");
-    el.setAttribute("aria-label", `Foto ${n}, lista. Tócala para verla en grande.`);
+  /* Los cuatro estados con imagen: preparada, subiendo, ya en el marco y fallo de
+     subida. La miniatura es la misma en los cuatro —sigue siendo una foto válida—;
+     lo único que cambia es la píldora de la esquina. */
+  const conImagen = { [ESTADO.LISTA]:1, [ESTADO.SUBIENDO]:1, [ESTADO.SUBIDA]:1, [ESTADO.FALLO]:1 };
+
+  if (conImagen[item.estado]) {
+    const marca =
+      item.estado === ESTADO.SUBIENDO ? `<span class="marca">subiendo</span>` :
+      item.estado === ESTADO.SUBIDA   ? `<span class="marca hecha">✓</span>` :
+      item.estado === ESTADO.FALLO    ? `<span class="marca mala">!</span>` :
+      item.aviso                      ? `<span class="marca">franjas</span>` : "";
+    el.className = "mosaico lista"
+      + (item.estado === ESTADO.SUBIENDO ? " proc" : "")
+      + (item.estado === ESTADO.SUBIDA   ? " subida" : "");
+    el.innerHTML = `<img src="${item.url}" alt="" loading="lazy" decoding="async">` + num + marca;
+    el.setAttribute("aria-label",
+      item.estado === ESTADO.SUBIENDO ? `Foto ${n}, subiendo.` :
+      item.estado === ESTADO.SUBIDA   ? `Foto ${n}, ya está en el marco.` :
+      item.estado === ESTADO.FALLO    ? `Foto ${n}: no se pudo subir. Tócala para saber por qué.` :
+      `Foto ${n}, lista. Tócala para verla en grande.`);
   } else if (item.estado === ESTADO.ERROR) {
     el.className = "mosaico err";
     el.innerHTML = `<span class="fallo">No se pudo</span>` + num;
@@ -907,10 +1161,16 @@ function pintarBarra(interrumpida){
   const listas = cuenta(ESTADO.LISTA);
   const errores = cuenta(ESTADO.ERROR);
   const pendientes = cuenta(ESTADO.PENDIENTE);
+  const subidas = cuenta(ESTADO.SUBIDA);
+  const fallos = cuenta(ESTADO.FALLO);
   const btn = $("btnCola");
 
   let texto;
-  if (cola.corriendo) {
+  if (cola.subiendo) {
+    // El +1 es la que está en vuelo, que no cuenta en ninguno de los tres montones.
+    texto = `Subiendo ${subidas + fallos + 1} de ${subidas + fallos + listas + 1}…`;
+    btn.textContent = "Cancelar"; btn.hidden = false;
+  } else if (cola.corriendo) {
     // Mientras corre, solo el progreso. El recuento de fallos se guarda para el
     // final: cada mosaico que falla ya se marca en el acto, y meterlo aquí alarga
     // la línea a dos renglones a mitad de tanda.
@@ -921,16 +1181,37 @@ function pintarBarra(interrumpida){
       ? `Se interrumpió la preparación. Faltan ${pendientes}.`
       : `${listas} ${listas === 1 ? "lista" : "listas"} · faltan ${pendientes}`;
     btn.textContent = "Continuar"; btn.hidden = false;
+  } else if (subidas || fallos) {
+    /* Ya hubo subida: la línea habla de eso, que es lo último que pasó. Puede
+       quedar VACÍA —si todas fallaron— y entonces la línea es solo el sufijo. De
+       ahí el filter: un «0 sin subir» sería ruido y una concordancia rota. */
+    texto = [subidas ? `${subidas} ${subidas === 1 ? "subida" : "subidas"}` : "",
+             listas  ? `${listas} sin subir` : ""].filter(Boolean).join(" · ");
+    btn.hidden = true;
   } else {
     texto = listas === 1 ? "1 foto lista" : `${listas} fotos listas`;
     btn.hidden = true;
   }
+  const extra = [];
   if (errores && !cola.corriendo)
-    texto += ` · ${errores} no se ${errores === 1 ? "pudo" : "pudieron"} preparar`;
-  $("estadoTanda").textContent = texto;
+    extra.push(`${errores} no se ${errores === 1 ? "pudo" : "pudieron"} preparar`);
+  if (fallos && !cola.subiendo)
+    extra.push(`${fallos} no se ${fallos === 1 ? "pudo" : "pudieron"} subir`);
+  $("estadoTanda").textContent = [texto, ...extra].filter(Boolean).join(" · ");
 
   // Limpiar es destructivo; durante la tanda el botón que toca es Cancelar.
-  $("btnLimpiar").disabled = cola.corriendo;
+  $("btnLimpiar").disabled = cola.corriendo || cola.subiendo;
+
+  /* Un solo manejador para «Subir al marco» y «Reintentar»: subirTanda() devuelve a
+     LISTA los fallos que se pueden reintentar y arranca el bucle, que sube en orden
+     de rejilla. No hay subida de una foto suelta — ver subirTanda(). */
+  const bs = $("btnSubirTanda");
+  const reintentables = cola.items.filter(i => i.estado === ESTADO.FALLO && i.reintentable).length;
+  bs.hidden   = CFG.BASE === null || !(listas || reintentables);
+  bs.disabled = cola.corriendo || cola.subiendo;
+  bs.textContent = !listas && reintentables
+    ? (reintentables === 1 ? "Reintentar 1 foto" : `Reintentar ${reintentables} fotos`)
+    : "Subir al marco";
 
   // Aviso de franjas agregado, visible en producción. El texto completo, por eje,
   // vive en el detalle de cada foto.
@@ -945,9 +1226,24 @@ function pintarBarra(interrumpida){
       : `${conFranjas} de ${listas} fotos se verán con franjas negras. Tócalas para ver cómo quedan.`;
   }
 
-  $("hintTanda").textContent = CFG.ENDPOINT
-    ? "Se suben de una en una, en el orden de la rejilla."
-    : "Toca una foto para verla en grande o guardarla.";
+  /* La compuerta va contra null, NUNCA por veracidad: "" es el valor de producción
+     y es falsy — un `CFG.BASE ? …` apagaría esto justo en el marco. */
+  const hint = $("hintTanda");
+  const conBug = CFG.DIAG && cola.items.find(i => i.bug);
+  hint.style.color = "";
+  if (CFG.BASE === null) {
+    hint.textContent = "Toca una foto para verla en grande o guardarla.";
+  } else if (conBug) {
+    // 400 y 503 no son problema de quien sube fotos: son de esta página. Con el
+    // diagnóstico apagado el mensaje llano del detalle es lo único que se ve.
+    hint.style.color = "var(--err)";
+    hint.textContent = "BUG DE LA PÁGINA · " + conBug.motivo;
+  } else if (subidas && !listas && !fallos && !pendientes && !cola.subiendo) {
+    // La respuesta a «¿funcionó?» para alguien que no va a mirar nada más.
+    hint.textContent = "Ya están en el marco.";
+  } else {
+    hint.textContent = "Se suben de una en una, en el orden de la rejilla.";
+  }
 
   // Resumen de tanda: solo diagnóstico.
   const res = $("resumenTanda");
@@ -967,7 +1263,9 @@ let historiaEmpujada = false;
 function abrirDetalle(id){
   const item = cola.items.find(i => i.id === id);
   if (!item) return;
-  if (item.estado !== ESTADO.LISTA && item.estado !== ESTADO.ERROR) return;  // todavía no hay nada que ver
+  // Todavía no hay nada que ver. Los demás estados —incluidos los de la red— sí
+  // tienen imagen o un motivo que explicar.
+  if (item.estado === ESTADO.PENDIENTE || item.estado === ESTADO.PROCESANDO) return;
 
   detalleId = id;
   pintarDetalle(item);
@@ -1018,6 +1316,8 @@ window.addEventListener("popstate",
 function pintarDetalle(item){
   const stage = $("stage");
   const procesando = item.estado === ESTADO.PROCESANDO;
+  const subiendo   = item.estado === ESTADO.SUBIENDO;
+  const ocupado    = procesando || subiendo;
 
   if (item.estado === ESTADO.ERROR) {
     stage.innerHTML = "";
@@ -1029,6 +1329,7 @@ function pintarDetalle(item){
     $("cardRecorte").hidden = true;      // sin dimensiones no hay nada que recortar
     $("btnDownload").disabled = true;
     $("btnQuitarFoto").disabled = false; // y aquí es LA acción de la pantalla
+    $("btnUpload").disabled = true;
     return;
   }
 
@@ -1043,23 +1344,48 @@ function pintarDetalle(item){
     stage.appendChild(prev);
   }
 
+  /* El motivo de un fallo de subida va donde la vista ya mira, el mismo sitio del
+     aviso de franjas. En lenguaje llano SIEMPRE: el texto técnico vive en
+     item.motivo y solo lo pinta el panel de diagnóstico. */
   const aviso = $("aviso");
-  aviso.hidden = !item.aviso;
-  if (item.aviso) aviso.textContent = item.aviso;
+  const texto = item.estado === ESTADO.FALLO ? item.error : item.aviso;
+  aviso.hidden = !texto;
+  if (texto) aviso.textContent = texto;
 
   // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
-  $("caption").textContent = procesando ? "Ajustando…"
+  $("caption").textContent =
+      procesando ? "Ajustando…"
+    : subiendo   ? "Subiendo…"
+    : item.estado === ESTADO.SUBIDA ? "Ya está en el marco"
     : CFG.DIAG ? `${item.dstW} × ${item.dstH} px · ${kb(item.blob.size)}`
+    : item.estado === ESTADO.FALLO ? "No se subió"
     : "Lista para subir";
 
-  /* Todos los botones fuera de servicio mientras se recalcula. «Quitar foto»
-     incluido, y no por pulcritud: sacar de la cola un item en PROCESANDO deja el
-     object URL que crea reprocesarConRecorte() al terminar sin nadie que lo
-     revoque. Fuga silenciosa y difícil de reproducir. */
-  $("btnDownload").disabled     = procesando;
-  $("btnQuitarFoto").disabled   = procesando;
-  $("btnRecortar").disabled     = procesando;
-  $("btnQuitarRecorte").disabled = procesando;
+  /* Todos los botones fuera de servicio mientras se recalcula o se sube. «Quitar
+     foto» incluido, y no por pulcritud: sacar de la cola un item en PROCESANDO deja
+     el object URL que crea reprocesarConRecorte() al terminar sin nadie que lo
+     revoque, y sacar uno en SUBIENDO deja un multipart en vuelo sobre él. */
+  $("btnDownload").disabled   = ocupado;
+  $("btnQuitarFoto").disabled = ocupado;
+
+  /* El recorte se cierra también con el bucle de subida corriendo y sobre una foto
+     que ya está en el marco: recortarla crearía una segunda copia en la SD con otro
+     nombre. La guarda de verdad está en abrirEditor(); esto es que no se vea un
+     botón vivo que no hace nada. */
+  const recortable = !ocupado && !cola.subiendo && item.estado !== ESTADO.SUBIDA;
+  $("btnRecortar").disabled      = !recortable;
+  $("btnQuitarRecorte").disabled = !recortable;
+
+  /* Un solo botón para los cuatro estados de la red. Sube la TANDA, no esta foto:
+     el orden de subida es el del manifiesto y el de reproducción en el marco. */
+  const bu = $("btnUpload");
+  bu.disabled = cola.corriendo || cola.subiendo || item.estado === ESTADO.SUBIDA
+                || (item.estado === ESTADO.FALLO && !item.reintentable);
+  bu.textContent =
+      subiendo ? "Subiendo…"
+    : item.estado === ESTADO.SUBIDA ? "Ya está en el marco"
+    : item.estado === ESTADO.FALLO ? (item.reintentable ? "Reintentar" : "No se puede subir")
+    : "Subir al marco";
 
   $("cardRecorte").hidden = false;
   $("btnQuitarRecorte").hidden = !item.recorte;
@@ -1130,6 +1456,11 @@ async function vistaPrevia(file){
 async function abrirEditor(id){
   const item = cola.items.find(i => i.id === id);
   if (!item || item.estado !== ESTADO.LISTA) return;
+  /* Y tampoco con el bucle de subida corriendo, aunque el item esté LISTA e
+     inhabilitar el botón parezca bastar. Confirmar el recuadro lo pasa a
+     PROCESANDO, el find() del bucle deja de verlo, la tanda termina sin él y la
+     foto se queda sin subir SIN DECIR NADA. La guarda va aquí, no en el botón. */
+  if (cola.subiendo) return;
 
   $("btnRecortar").disabled = true;          // la decodificación tarda ~250 ms
   let previa;
@@ -1263,14 +1594,21 @@ $("btnAplicarRecorte").addEventListener("click", () => {
 /* ─────────────────────────────────────────────────────────────
    7. EVENTOS
    ───────────────────────────────────────────────────────────── */
-/* Etapa 5: cuando exista CFG.ENDPOINT, los botones de subir se muestran y se
-   conectan. Mientras tanto no se pintan. Un botón primario deshabilitado para
-   siempre se ve a proyecto y no a producto; sin él, «Guardar JPEG» deja de ser un
-   consuelo y pasa a ser LA acción de este modo. */
-if (!CFG.ENDPOINT) {
-  $("btnUpload").hidden = true;
-  $("btnSubirTanda").hidden = true;
-  $("hint").textContent = "«Guardar JPEG» descarga el archivo exacto que se subiría al marco, para revisarlo en la computadora.";
+/* Sin marco al que subir, los botones de subir no se pintan: un botón primario
+   deshabilitado para siempre se ve a proyecto y no a producto, y sin él «Guardar
+   JPEG» deja de ser un consuelo y pasa a ser LA acción de este modo.
+
+   La compuerta es `=== null`, NUNCA por veracidad: el valor de producción es "" y
+   es falsy. Está en una función porque el arnés cambia CFG.BASE y necesita
+   re-evaluarla sin recargar la página. */
+function aplicarModoRed(){
+  const sinRed = CFG.BASE === null;
+  $("btnUpload").hidden     = sinRed;
+  $("btnProbarOrden").hidden = sinRed;
+  $("hint").textContent = sinRed
+    ? "«Guardar JPEG» descarga el archivo exacto que se subiría al marco, para revisarlo en la computadora."
+    : "Se suben de una en una. Lo que ya haya subido se queda en el marco aunque canceles.";
+  pintarBarra();      // btnSubirTanda depende de la misma compuerta
 }
 
 function avisarTope(pedidas, aceptadas){
@@ -1279,6 +1617,24 @@ function avisarTope(pedidas, aceptadas){
   el.textContent = aceptadas
     ? `Caben ${CFG.MAX_TANDA} fotos por tanda. Se agregaron ${aceptadas}; sube estas y vuelve por las demás.`
     : `Ya hay ${CFG.MAX_TANDA} fotos, que es el máximo por tanda. Súbelas y vuelve por las demás.`;
+}
+
+/* Saca de la tanda las que ya están en el marco, para dejar cupo. Nada se pierde:
+   están en la tarjeta. Solo se llama desde el selector, y ahí el orden importa —ver
+   el comentario de su handler—. */
+function descartarSubidas(){
+  const quedan = cola.items.filter(item => {
+    if (item.estado !== ESTADO.SUBIDA) return true;
+    // Fuera del DOM ANTES de revocar, como en limpiarTanda(): revocar con el <img>
+    // todavía montado deja miniaturas rotas en Safari.
+    const el = document.getElementById("m" + item.id);
+    if (el) el.remove();
+    if (item.url) URL.revokeObjectURL(item.url);
+    return false;
+  });
+  if (quedan.length === cola.items.length) return;
+  cola.items = quedan;
+  for (const p of cola.items) pintarItem(p);   // los números se corrieron
 }
 
 function limpiarTanda(){
@@ -1300,10 +1656,20 @@ $("file").addEventListener("change", e => {
   cerrarDetalle();
 
   /* Anexar, NUNCA reemplazar. Abrir el selector no puede destruir fotos ya
-     preparadas: nadie va a intuir que ese gesto es destructivo, y con la capa de
-     subida encima serían fotos ya listas para subir. Lo único que vacía la tanda es
-     el botón «Limpiar», que sí es explícito. Anexar al final además preserva
-     «orden de selección = orden de subida = orden del manifiesto». */
+     preparadas: nadie va a intuir que ese gesto es destructivo, y son fotos ya
+     listas para subir. Lo único que vacía la tanda es el botón «Limpiar», que sí es
+     explícito. Anexar al final además preserva «orden de selección = orden de
+     subida = orden del manifiesto».
+
+     Las que YA ESTÁN EN EL MARCO sí salen, y no contradice lo anterior: ese
+     invariante protege trabajo no entregado, y éstas están en la tarjeta. Es
+     además lo que promete el aviso del tope —«súbelas y vuelve por las demás»—;
+     sin esto, quien sube 30 se queda encerrado salvo que descubra «Limpiar».
+     EL ORDEN ES EL QUE ES: solo tras confirmar que hay fotos nuevas, y ANTES de
+     calcular el hueco. Al revés se destruiría el rastro de lo subido a cambio de
+     nada, por el mero gesto de abrir el selector. */
+  descartarSubidas();
+
   const hueco  = Math.max(0, CFG.MAX_TANDA - cola.items.length);
   const nuevas = elegidas.slice(0, hueco);
   if (nuevas.length < elegidas.length) avisarTope(elegidas.length, nuevas.length);
@@ -1314,10 +1680,16 @@ $("file").addEventListener("change", e => {
   arrancarCola();                          // los `continue` saltan lo ya preparado
 });
 
+/* Un solo botón para las dos colas, porque nunca corren a la vez. Los dos cortes
+   son iguales: al terminar la foto en curso, no a media foto. */
 $("btnCola").addEventListener("click", () => {
-  if (cola.corriendo) { cola.cancelado = true; return; }   // corta al terminar la foto en curso
+  if (cola.subiendo)  { cola.cancelSub = true; return; }
+  if (cola.corriendo) { cola.cancelado  = true; return; }
   arrancarCola();
 });
+
+$("btnSubirTanda").addEventListener("click", subirTanda);
+$("btnUpload").addEventListener("click", subirTanda);
 
 $("btnLimpiar").addEventListener("click", limpiarTanda);
 $("btnVolver").addEventListener("click", () => cerrarDetalle());
@@ -1338,7 +1710,7 @@ $("btnQuitarFoto").addEventListener("click", () => quitarFoto(detalleId));
 
 /* Diagnóstico: relee la primera y la última de la tanda y compara byteLength
    contra file.size. Es la prueba de que los File del selector siguen vivos, que es
-   de lo que dependen el recorte y —en la etapa 5— la subida. */
+   de lo que dependen el recorte y la subida. */
 $("diagFiles").hidden = !CFG.DIAG;
 $("btnProbarFiles").addEventListener("click", async () => {
   const btn = $("btnProbarFiles"), out = $("salidaFiles");
@@ -1364,6 +1736,29 @@ $("btnProbarFiles").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
+/* Diagnóstico: el orden del manifiesto. En producción no se comprueba —lo
+   garantizan la concurrencia 1 y el contador monótono del ESP32 (§3), y un
+   desajuste no produce ninguna acción que la persona pueda tomar—, pero medirlo una
+   vez contra el banco sí vale. */
+$("btnProbarOrden").addEventListener("click", async () => {
+  const btn = $("btnProbarOrden"), out = $("salidaFiles");
+  btn.disabled = true;
+  out.textContent = "Pidiendo /list…";
+  try {
+    const res = await fetch(CFG.BASE + "/list");
+    // Texto plano, un nombre por línea: /list hace streaming del manifiesto crudo
+    // desde la SD y el parser de este lado es un split (§3).
+    const nombres = (await res.text()).split("\n").filter(Boolean);
+    const mios = cola.items.filter(i => i.nombreRemoto).map(i => i.nombreRemoto);
+    const pos  = mios.map(n => nombres.indexOf(n));
+    out.textContent = !mios.length ? "todavía no hay fotos subidas"
+      : `${nombres.length} en el manifiesto · ${mios.length} de esta tanda · ` +
+        (pos.some(p => p < 0) ? "FALTA alguna"
+         : pos.every((p, i) => i === 0 || p > pos[i - 1]) ? "en orden" : "FUERA DE ORDEN");
+  } catch (e) { out.textContent = "no se pudo leer /list — " + e.name; }
+  btn.disabled = false;
+});
+
 $("btnDownload").addEventListener("click", () => {
   const item = cola.items.find(i => i.id === detalleId);
   if (!item || !item.blob) return;
@@ -1374,7 +1769,7 @@ $("btnDownload").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
-pintarBarra();
+aplicarModoRed();     // llama a pintarBarra()
 
 /* ─────────────────────────────────────────────────────────────
    8. AUTOCOMPROBACIÓN DE LA GEOMETRÍA — solo con CFG.DIAG

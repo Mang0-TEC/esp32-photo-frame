@@ -162,13 +162,212 @@
   // ── Los tres botones del detalle envuelven a 414 pt ────────────────────────
   abrirDetalle(cola.items[0].id);
   await esperar(100);
-  $$("btnUpload").hidden = false;                   // etapa 5 simulada
+  $$("btnUpload").hidden = false;   // aquí CFG.BASE todavía es null (file://)
   await esperar(50);
   const fila = id => Math.round($$(id).getBoundingClientRect().top);
   ok(fila("btnDownload") === fila("btnQuitarFoto") && fila("btnUpload") > fila("btnDownload"),
      "con «Subir al marco» los botones envuelven en vez de encogerse");
   $$("btnUpload").hidden = true;
   cerrarDetalle();
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     ETAPA 5 — LA CAPA DE RED
+
+     Sin ESP32 y sin servidor: se sustituye window.fetch, que es más determinista
+     que una placa y funciona igual sobre file://. Lo que NO se prueba aquí es el
+     comportamiento de Safari con la pestaña en segundo plano — eso es teléfono.
+
+     Sobre file:// la página se cae a CFG.BASE = null, que es lo que deja intactas
+     las comprobaciones de arriba. Aquí se fija a "" —el valor de PRODUCCIÓN— y se
+     restaura al final.
+     ══════════════════════════════════════════════════════════════════════════ */
+  const fetchReal = window.fetch;
+  let enVuelo = 0, maxEnVuelo = 0, peticiones = [], ultimaFoto = null, contador = 0;
+  let responder = null;
+
+  const jsonOk = () => new Response(
+    JSON.stringify({ ok: true, n: String(++contador).padStart(8, "0") + ".JPG" }),
+    { status: 200, headers: { "Content-Type": "application/json" } });
+
+  // El banco real devuelve la foto retenida; aquí se devuelve la que acaba de
+  // llegar por el multipart, así la verificación de integridad se ejercita entera.
+  const responderOk = async (url, init) => {
+    if (url.includes("/upload")) { ultimaFoto = init.body.get("foto"); return jsonOk(); }
+    if (url.includes("/photo"))  return new Response(ultimaFoto, { status: 200 });
+    if (url.includes("/list"))   return new Response("", { status: 200 });
+    return new Response("no", { status: 404 });
+  };
+
+  window.fetch = async (url, init = {}) => {
+    peticiones.push({ url: String(url), init });
+    enVuelo++; maxEnVuelo = Math.max(maxEnVuelo, enVuelo);
+    try { return await responder(String(url), init); } finally { enVuelo--; }
+  };
+
+  const subirYEsperar = async () => {
+    $$("btnSubirTanda").click();
+    return hasta(() => !cola.subiendo && !cola.corriendo, 15000);
+  };
+
+  // ── La compuerta. El valor de producción es "" y "" es FALSY ────────────────
+  limpiarTanda();
+  CFG.BASE = ""; aplicarModoRed();
+  ok(!$$("btnUpload").hidden, "con BASE = \"\" los botones de subir se pintan (la compuerta no es por veracidad)");
+  CFG.BASE = null; aplicarModoRed();
+  ok($$("btnUpload").hidden, "y con null desaparecen");
+  CFG.BASE = ""; aplicarModoRed();
+
+  // ── Tanda completa ─────────────────────────────────────────────────────────
+  responder = responderOk;
+  await meter([vertical, horizontal, exacta]);
+  await hasta(() => cola.items.length === 3 && cola.items.every(i => i.estado === "lista"));
+  peticiones = []; maxEnVuelo = 0;
+  await subirYEsperar();
+
+  ok(cola.items.every(i => i.estado === "subida"), "las tres fotos subieron");
+  ok(cola.items.map(i => i.nombreRemoto).join(",") === "00000001.JPG,00000002.JPG,00000003.JPG",
+     "nombreRemoto guardado, y en el orden de la rejilla");
+  ok(maxEnVuelo === 1, "NUNCA dos peticiones en vuelo: concurrencia de subida = 1");
+  ok(cola.items.every(i => (i.verif || "").startsWith("ok")), "la verificación de integridad pasó en las tres");
+  ok($$("hintTanda").textContent === "Ya están en el marco.", "y la barra lo dice en lenguaje llano");
+
+  const subs = peticiones.filter(p => p.url.endsWith("/upload"));
+  ok(subs.length === 3, `una petición de subida por foto (dio ${subs.length})`);
+  ok(subs[0].init.method === "POST", "método POST");
+  ok(subs[0].init.headers === undefined,
+     "SIN cabeceras propias: una sola dispararía un OPTIONS que cae en onNotFound → 404");
+  ok(subs[0].init.body.get("foto") instanceof Blob, "el campo del multipart se llama «foto»");
+
+  // ── 413: no reintentable, y no tumba la tanda ──────────────────────────────
+  limpiarTanda();
+  await meter([vertical, horizontal, exacta]);
+  await hasta(() => cola.items.length === 3 && cola.items.every(i => i.estado === "lista"));
+  let k = 0;
+  responder = async (url, init) =>
+    (url.includes("/upload") && ++k === 2) ? new Response("", { status: 413 }) : responderOk(url, init);
+  await subirYEsperar();
+
+  ok(cola.items.filter(i => i.estado === "subida").length === 2, "un 413 en la foto 2 no tumba la tanda");
+  ok(cola.items[1].estado === "fallo" && cola.items[1].reintentable === false,
+     "la foto del 413 queda en FALLO y NO reintentable");
+  ok(!/\d/.test(cola.items[1].error), "su mensaje al usuario no lleva un solo número");
+  ok($$("btnSubirTanda").hidden, "y sin nada reintentable el botón de subir desaparece");
+
+  // ── Red caída: corta tras dos seguidos, el resto sigue en LISTA ─────────────
+  limpiarTanda();
+  await meter([await jpeg(600, 800, "r1.jpg"), await jpeg(600, 800, "r2.jpg"),
+               await jpeg(600, 800, "r3.jpg"), await jpeg(600, 800, "r4.jpg")]);
+  await hasta(() => cola.items.length === 4 && cola.items.every(i => i.estado === "lista"));
+  responder = async () => { throw new TypeError("Failed to fetch"); };
+  await subirYEsperar();
+
+  ok(cola.items.filter(i => i.estado === "fallo").length === 2, "corta tras dos fallos de red seguidos");
+  ok(cola.items.filter(i => i.estado === "lista").length === 2,
+     "y las que no se intentaron siguen en LISTA, no en FALLO");
+  responder = responderOk;
+  await subirYEsperar();
+  ok(cola.items.every(i => i.estado === "subida"), "volver a tocar «Subir» termina la tanda");
+
+  // ── 503: reintentable, y grita en el diagnóstico ───────────────────────────
+  limpiarTanda();
+  await meter([vertical, horizontal]);
+  await hasta(() => cola.items.length === 2 && cola.items.every(i => i.estado === "lista"));
+  responder = async (url, init) =>
+    url.includes("/upload") ? new Response("", { status: 503 }) : responderOk(url, init);
+  await subirYEsperar();
+  const f503 = cola.items[0];
+  ok(f503.estado === "fallo" && f503.reintentable, "el 503 sí es reintentable");
+  ok(/503/.test(f503.motivo) && /CLIENTE/.test(f503.motivo), "y el motivo técnico dice de quién es el bug");
+  ok($$("hintTanda").textContent.startsWith("BUG DE LA PÁGINA"), "la barra lo grita bajo CFG.DIAG");
+  ok(!/503/.test(f503.error), "pero el mensaje al usuario no menciona el código");
+
+  // ── 200 con cuerpo que no es el del contrato ───────────────────────────────
+  limpiarTanda();
+  await meter([vertical, horizontal]);
+  await hasta(() => cola.items.every(i => i.estado === "lista"));
+  responder = async (url, init) =>
+    url.includes("/upload") ? new Response("<html>", { status: 200 }) : responderOk(url, init);
+  await subirYEsperar();
+  ok(cola.items[0].estado === "fallo" && /200/.test(cola.items[0].motivo),
+     "un 200 con cuerpo inválido es un fallo, no un éxito");
+
+  // ── Timeout ────────────────────────────────────────────────────────────────
+  limpiarTanda();
+  CFG.TIMEOUT_MS = 200;
+  await meter([vertical, horizontal]);
+  await hasta(() => cola.items.every(i => i.estado === "lista"));
+  responder = (url, init) => new Promise((_, rechaza) =>
+    init.signal.addEventListener("abort", () => rechaza(new DOMException("Aborted", "AbortError"))));
+  await subirYEsperar();
+  ok(cola.items[0].estado === "fallo" && cola.items[0].reintentable, "el timeout deja la foto reintentable");
+  ok(/sin respuesta/.test(cola.items[0].motivo), "y el motivo dice que venció el reloj, no que abortó nadie");
+  CFG.TIMEOUT_MS = 10000;
+
+  // ── Con una subida EN VUELO: quitar, recortar, y elegir más fotos ──────────
+  limpiarTanda();
+  await meter([vertical, horizontal]);
+  await hasta(() => cola.items.every(i => i.estado === "lista"));
+  let soltar = null;
+  responder = (url, init) => {
+    if (!url.includes("/upload")) return responderOk(url, init);
+    ultimaFoto = init.body.get("foto");
+    return new Promise(res => { soltar = () => res(jsonOk()); });
+  };
+  $$("btnSubirTanda").click();
+  ok(await hasta(() => cola.items[0].estado === "subiendo"), "la primera foto entró en SUBIENDO");
+
+  window.confirm = () => true;
+  quitarFoto(cola.items[0].id);
+  ok(cola.items.length === 2, "no se puede quitar una foto con su multipart en vuelo");
+
+  abrirDetalle(cola.items[1].id);
+  await abrirEditor(cola.items[1].id);
+  ok(ed === null, "y tampoco se abre el editor de recuadro con el bucle de subida corriendo");
+  cerrarDetalle();
+
+  await meter([await jpeg(600, 800, "tardia.jpg")]);
+  await esperar(60);
+  ok(!cola.corriendo, "elegir fotos a media subida NO arranca la preparación en paralelo");
+  ok(cola.items.some(i => i.estado === "pendiente"), "la nueva se queda en PENDIENTE, esperando");
+
+  responder = responderOk;      // que la siguiente no se quede colgada también
+  soltar();
+  ok(await hasta(() => !cola.subiendo && !cola.corriendo, 15000), "la tanda terminó");
+  ok(!cola.items.some(i => i.estado === "pendiente"),
+     "y el finally del bucle de subida reanudó la preparación de lo elegido a destiempo");
+
+  // ── Elegir más fotos descarta las que ya están en el marco ─────────────────
+  responder = responderOk;
+  await subirYEsperar();
+  const subidasAntes = cola.items.filter(i => i.estado === "subida").length;
+  ok(subidasAntes === 3, `las tres quedaron subidas (dio ${subidasAntes})`);
+  await meter([await jpeg(600, 800, "nueva.jpg")]);
+  await hasta(() => cola.items.length === 1 && cola.items[0].estado === "lista");
+  ok(cola.items.length === 1, "elegir más fotos saca de la tanda las que ya están en el marco");
+
+  /* ── Nada técnico con CFG.DIAG = false ─────────────────────────────────────
+     El 503 es el peor caso: bajo diagnóstico grita el código y de quién es el bug,
+     y en producción no puede quedar ni rastro de eso en ningún texto visible. */
+  limpiarTanda();
+  await meter([vertical, horizontal]);
+  await hasta(() => cola.items.every(i => i.estado === "lista"));
+  responder = async (url, init) =>
+    url.includes("/upload") ? new Response("", { status: 503 }) : responderOk(url, init);
+  await subirYEsperar();
+
+  CFG.DIAG = false;
+  abrirDetalle(cola.items[0].id);
+  pintarBarra();
+  const visible = [$$("caption").textContent, $$("aviso").textContent,
+                   $$("estadoTanda").textContent, $$("hintTanda").textContent].join(" | ");
+  ok($$("diagCard").hidden, "con CFG.DIAG = false el panel de diagnóstico no se pinta");
+  ok(!/\d{3}|HTTP|BUG|byte|JPG/.test(visible), "y ningún texto visible deja rastro técnico — " + visible);
+  cerrarDetalle();
+  CFG.DIAG = true;
+
+  window.fetch = fetchReal;
+  CFG.BASE = null; aplicarModoRed();
+  limpiarTanda();
 
   return { lineas, fallos };
 })()

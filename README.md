@@ -54,8 +54,10 @@ de diseño se filtra por esto:
 
 **Decisión central:** el ESP32 nunca procesa imágenes grandes. No le alcanza la
 memoria para reescalar una foto de 12 megapixeles, pero al navegador del celular
-sí. La foto se reduce a 480×320 y ~25 KB con la API de Canvas, y *eso* es lo
-único que se sube.
+sí. La foto se reduce a la orientación nativa del panel —vertical, 320×480— con
+un presupuesto de bytes por densidad de 0.2133 B/px, y *eso* es lo único que se
+sube. Una foto que llena la pantalla cuesta 32 KB; una con barras negras gasta
+menos, en proporción.
 
 Desde la perspectiva de quien lo usa: eligió una foto y funcionó.
 
@@ -100,23 +102,78 @@ pio device monitor       # 115200
 ## Estructura
 
 ```
-├── docs/          Decisiones de hardware y de diseño funcional
-├── web/           Página de subida: redimensionado y recorte por Canvas
-├── firmware/      Proyecto PlatformIO
-└── cad/           Carcasa y bisel
+├── docs/            Decisiones de hardware y de diseño funcional
+├── web/             Página de subida: redimensionado, recorte y red
+│   └── test/        Arnés de regresión sobre Chrome sin cabeza
+├── firmware/        Proyecto PlatformIO del marco
+│   └── banco/       Proyecto APARTE: mock del contrato HTTP sobre ESP32 real
+└── cad/             Carcasa y bisel
 ```
+
+El **banco** implementa las cinco rutas del contrato sin SD ni display, para
+desarrollar y medir la capa de red contra hardware de verdad. No es la base del
+firmware final, y duplica a mano tres versiones de `platformio.ini` que hay que
+sincronizar.
 
 ---
 
 ## Estado
 
-| | |
+| Pieza | Estado |
 |---|---|
 | Documentos de diseño | Cerrados |
 | Toolchain | Verificado, build limpio y reproducible |
-| Página de subida | Sin empezar — es la siguiente pieza |
-| Firmware | Sin empezar |
+| Página de subida | **Completa** — preparación, recorte y subida |
+| Banco de red | Contrato HTTP corriendo sobre un ESP32 real |
+| Componentes | **$387 por comprar** — pantalla, lector SD, sensor y el ESP32 definitivo |
+| Firmware del marco | Sin empezar |
 | Carcasa | Sin empezar |
+
+### Lo que ya funciona
+
+La página es la pieza más delicada de la arquitectura y está terminada, salvo el
+empaquetado. Medido en un iPhone 11, sobre Safari de iOS:
+
+- Orientación EXIF **verificada, no asumida** — comparando ejes, nunca igualdad de
+  píxeles.
+- Escalado por *halving* progresivo, presupuesto de bytes por densidad y encoder
+  con búsqueda binaria acotada. Tanda de 30 fotos en **2711 ms**, 90 ms por foto.
+- Rejilla con multi-selección, cola con estado por foto, y editor de recuadro 2:3
+  propio —sin dependencias— con recorte reversible.
+
+Escrita pero **todavía sin correr en el teléfono**: la subida de una en una contra
+`POST /upload`, con timeout, reintento de solo las que fallaron y verificación de
+integridad byte a byte bajo diagnóstico.
+
+**82 comprobaciones automatizadas** sobre Chrome sin cabeza, sin dependencias:
+
+```bash
+node web/test/correr.js
+```
+
+### Lo que falta
+
+**Sin hardware nuevo:**
+
+- **Empaquetado de la página**: gzip → array de C en PROGMEM. Son 29.2 KB
+  gzipeados, o sea ~150 KB de fuente de C que cambia entera al tocar una línea —
+  hay que decidir antes si se versiona o se genera en el build.
+- **Medir la subida en el iPhone contra el banco.** Lo único que no puede simular
+  el arnés: la tanda de 30 real, y qué pasa cuando la pestaña se va a segundo
+  plano a media subida.
+
+**Con los componentes en mano**, y en este orden:
+
+1. **Provisioning WiFi de extremo a extremo.** Va primero porque es lo único que
+   puede forzar un cambio de plataforma: `WiFiManager@2.0.17` sobre
+   arduino-esp32 3.3.x es la combinación del issue #1797. Hay tres planes B.
+2. Prueba de tres pasos del pin `BL` del display, pinout del PN2222A, velocidad
+   SPI estable (27 → 40 → 80 MHz) y dirección I2C del BH1750.
+3. Firmware del marco: manifiesto con reconstrucción, decodificación por bloques,
+   brillo por BH1750, toque capacitivo y QR.
+4. **Galería de lo ya cargado y `POST /delete`** — la única ruta del contrato que
+   la página todavía no llama.
+5. Integración y modelado de la carcasa.
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no
 solo qué se eligió, sino **qué se descartó y por qué** — que suele ser la parte

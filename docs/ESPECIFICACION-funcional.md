@@ -346,12 +346,26 @@ El editor **se abre igual**, con la caja cubriendo la foto entera, porque sigue 
 GET  /                  → página, gzip desde PROGMEM, Content-Encoding: gzip
 GET  /list              → text/plain, streaming de /manifest.txt desde la SD
 GET  /photo?n=NOMBRE    → JPEG desde /fotos/NOMBRE
+                          400 nombre que no cumple ^[0-9]{8}\.JPG$
+                          404 nombre válido que no existe
 POST /upload            → multipart, campo "foto"
                           200 {"ok":true,"n":"00000042.JPG"}
+                          400 campo distinto de "foto", o archivo vacío
                           413 archivo > 64 KB
+                          503 subida solapada
                           507 SD llena
 POST /delete            → {"n":"00000042.JPG"}
+                          400 nombre que no cumple el patrón
 ```
+
+**El `400` y el `503` no son detalle de implementación.** El `400` es la
+contrapartida de la validación obligatoria de abajo: si el nombre inválido
+respondiera cualquier otra cosa, la página no tendría forma de distinguir «ese
+nombre no vale» de «esa foto ya no está». Y el `503` existe porque **la
+concurrencia 1 es disciplina del cliente y el servidor no puede confiar en
+ella**: dos multipart simultáneos escribiendo el mismo buffer dan una foto
+corrupta en silencio, así que el segundo se rechaza en vez de mezclarse. Una
+subida que recibe `503` se reintenta igual que una que falló por red.
 
 **Sin miniaturas.** Las fotos pesan 32 KB en el peor caso; la galería sirve los archivos reales y se ahorra generarlas, guardarlas y mantenerlas sincronizadas.
 

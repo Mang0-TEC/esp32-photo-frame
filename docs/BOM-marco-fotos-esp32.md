@@ -297,6 +297,12 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 **Las siete versiones ya están pineadas** — las de arriba son las que resolvieron en el primer build limpio y las que están en el `platformio.ini` real. No usar `latest` en ninguna: cambia el comportamiento bajo los pies. Al actualizar cualquiera, actualizar también este bloque.
 
+### El banco de red duplica tres de estas versiones a mano
+
+`firmware/banco/` es un proyecto PlatformIO **aparte**, con su propio `platformio.ini`, su `src/` y su `.pio/`. Implementa el contrato HTTP de §4 sin SD y sin display, para desarrollar y medir la capa de red de la página contra el ESP32 real. No es la base del firmware final y no toca `[env:marco]`.
+
+Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@3.12.0` y `AsyncTCP@3.5.0`. **Al actualizar cualquiera de las tres aquí, sincronizar allá.** Si divergen, el banco deja de probar lo que el firmware va a correr — que es el único motivo de que ese mock esté en el ESP32 y no en Python. El archivo del banco lleva el aviso en su encabezado, pero eso se lee estando ya dentro; el desfase se produce editando **este** lado.
+
 **Afinación de `SPI_FREQUENCY`:** arrancar en 27 MHz para las primeras pruebas. Con imagen estable, subir a 40 y luego a 80. Si aparecen líneas o píxeles corridos, bajar un escalón. Es empírico y depende del largo de los cables.
 
 ### Nunca escribir a la SD desde el callback de upload

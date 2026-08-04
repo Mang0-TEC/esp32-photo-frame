@@ -382,7 +382,13 @@ Consecuencia para la tabla de arriba, que mide presupuesto y no ocupación real:
 
 Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
 
-**Y el caso medido cae del lado de los dos clusters.** El peso medio real de una tanda de 30 fotos de iPhone son **34.3 KB**, por encima de los 32,768 B del presupuesto, con un peor caso de 43.0 KB. O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el número que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
+**Y el caso medido cae del lado de los dos clusters.** El peso medio real de una tanda de 30 fotos de iPhone son **34.0 KB**, por encima de los 32,768 B del presupuesto. O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el número que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
+
+**El peor caso medido no ha dejado de subir, y por eso no se usa como cota.** Van 40.3 KB (tirol blanco), 43.0 (malla metálica perforada) y **50.7 KB** (un perro sobre césped, o sea textura fina en todo el encuadre). Las tres son el mismo fenómeno: la búsqueda binaria toca el suelo de calidad y se acepta por encima del presupuesto, que es el comportamiento correcto de §4. Cualquier constante dimensionada contra el récord del día envejece en la siguiente tanda.
+
+> Se intentó lo obvio —igualar el búfer de retención del banco al tope duro, para que no hubiera fotos sin verificar— y **se midió que no sale a cuenta**: `mayorBloque` cae de 34804 a 16372 B tras levantar el WiFi, la mitad del bloque contiguo mayor, con AsyncTCP pidiendo memoria por conexión. Ese búfer no lo limita el tamaño de las fotos sino el heap, y es un lujo del banco que el firmware real no va a tener. Se queda en 48 KB, y una foto mayor se reporta como «no retenida», que no es corrupción.
+
+**Y deja un margen que conviene mirar:** 50.7 KB contra los 64 KB del tope duro son **1.26×**. Por encima de ese tope el servidor responde `413` y la página no tiene salida más que descartar la foto — hoy es un riesgo teórico, pero era más teórico con el récord en 40.
 
 **Verificar al preparar la tarjeta.** 32 KB es lo que trae de fábrica y lo que produce el SD Card Formatter oficial, pero macOS puede elegir otro tamaño al reformatear. Se confirma con `diskutil info /dev/diskNs1`, campo de tamaño de asignación.
 

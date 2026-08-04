@@ -183,6 +183,11 @@ static void subidaFin(AsyncWebServerRequest *req) {
   // la propiedad al dueño legítimo a media subida y su siguiente chunk volvería
   // a reclamar el buffer con acum ya avanzado — foto corrupta, en silencio.
   if (dueno != req) {
+    // Se anota: el intruso no pasa por el printf del chunk —sale antes— y sin esta
+    // línea el banco rechaza en SILENCIO, que es lo último que quieres cuando estás
+    // depurando por qué salió o no salió un 503.
+    Serial.printf("[subida] -> %d (%s)\n", req == intruso ? 503 : 400,
+                  req == intruso ? "solapada" : "sin parte de archivo");
     if (req == intruso) req->send(503, "text/plain", "ocupado");
     else req->send(400, "text/plain", "foto");  // POST sin parte de archivo
     return;
@@ -211,9 +216,11 @@ static void subidaFin(AsyncWebServerRequest *req) {
     char n[13];
     snprintf(n, sizeof n, "%08u.JPG", (unsigned)contador++);
     if (nNombres < MAX_NOMBRES) strcpy(nombres[nNombres++], n);
-    // bufRetenida es más chico que el tope duro: cubre con margen el peor caso
-    // medido del pipeline (40.3 KB). Un archivo mayor sube bien —el contrato es
-    // 200— pero no se retiene, y /photo dará 404 para él.
+    // bufRetenida es más chico que el tope duro, y lo que lo limita es el HEAP,
+    // no el tamaño de las fotos: igualarlo al tope se midió y deja mayorBloque en
+    // 16372 tras WiFi, la mitad. Un archivo mayor sube bien —el contrato es 200—
+    // pero no se retiene y /photo dará 404 para él. Eso NO es corrupción y la
+    // página lo reporta distinto; ver el comentario de BANCO_RET en el .ini.
     if (bufRetenida && acum <= BANCO_RET) {
       memcpy(bufRetenida, modoHeap ? heapBuf : bufSubida, acum);
       retLen = acum;
@@ -340,8 +347,18 @@ void setup() {
   // serveStatic registraría un handler por prefijo, o sea el catch-all que el
   // contrato prohíbe. Ruta explícita.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-    if (hayFS && LittleFS.exists("/index.html")) req->send(LittleFS, "/index.html", "text/html");
-    else req->send(200, "text/plain", "banco activo, sin pagina: falta 'pio run -t uploadfs'");
+    if (!hayFS || !LittleFS.exists("/index.html")) {
+      req->send(200, "text/plain", "banco activo, sin pagina: falta 'pio run -t uploadfs'");
+      return;
+    }
+    // no-store DE BANCO, no del contrato. Aquí la página cambia varias veces por
+    // sesión y Safari se queda con la vieja: se mide una versión creyendo medir
+    // otra, y el síntoma es que «el cambio no aparece». En el marco pasa lo
+    // contrario —la página vive en PROGMEM y solo cambia al reflashear—, así que
+    // allá cachearla es correcto y esta línea no debe copiarse.
+    AsyncWebServerResponse *r = req->beginResponse(LittleFS, "/index.html", "text/html");
+    r->addHeader("Cache-Control", "no-store");
+    req->send(r);
   });
 
   server.on("/list", HTTP_GET, [](AsyncWebServerRequest *req) {

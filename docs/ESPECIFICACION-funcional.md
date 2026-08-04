@@ -283,12 +283,27 @@ Que el selector del iPhone entregue un `IMG_1473.jpeg` y no un `.heic` está med
 
 **Esta tabla se tomó con el tope plano de 32 KB y el rango de calidad [0.30, 0.92] anteriores.** Con el presupuesto por densidad y el rango [0.62, 0.92] de arriba, las columnas de peso, `q` e intentos cambian por construcción — IMG_1347 baja a un objetivo de 16.0 KB. Lo que sigue siendo comparable son la salida, el veredicto de orientación y los pasos de halving.
 
+#### Y tampoco son comparables entre motores: el encoder de WebKit pesa mucho más
+
+`IMG_1434` está medida en los dos, y es la misma foto:
+
+| | Chromium | Safari de iOS |
+|---|---|---|
+| Salida | 320×427 | 320×427 |
+| `q` | 0.688 | **0.620** — el suelo |
+| Intentos | 4 | 8 |
+| Peso | **29.2 KB** | **50.7 KB** |
+
+Misma entrada, misma salida, y en Safari pesa **1.74× más con menos calidad**. La única variable que queda es el encoder: el JPEG de WebKit es bastante menos agresivo que el de Chromium al mismo `q`. Los 8 intentos lo confirman — la búsqueda recorrió `[0.62, 0.92]` completa sin que nada cupiera en los 28.5 KB de presupuesto, y cayó al piso.
+
+**Consecuencia práctica: cualquier peso medido en Chromium subestima el real**, y el peor caso solo tiene sentido medirlo en el teléfono. Es también por qué el suelo de `q` se topa tan a menudo en Safari y casi nunca en escritorio: no es que las fotos del teléfono sean peores, es que su encoder produce archivos más grandes. Si al ver la pantalla real la calidad a 0.620 resulta de sobra, el margen para bajar el piso es mayor de lo que sugerían las mediciones de escritorio.
+
 #### Lo que sigue abierto
 
 Dos puntos, y ninguno bloquea la construcción:
 
 - **EXIF = 5 (transpose) está verificado solo en Chromium.** Es espejo diagonal, no solo rotación, y el arnés comprueba el intercambio de ejes pero **no** el reflejo — un navegador que rotara sin reflejar daría veredicto verde igualmente, en cualquier motor. El panel lo marca como «reflejo SIN verificar» para que no se lea como una comprobación que no es. Limitación conocida del arnés, no del pipeline. Lo medido en Safari de iOS son dos fotos con EXIF 6; ninguna con 5.
-- **Calidad a q = 0.620 sobre la pantalla real.** Hay un caso medido detrás: `IMG_1473`, tirol blanco, 40.3 KB contra 28.5 de presupuesto y la calidad en el suelo. Puede haber bloqueo visible. Se juzga cuando llegue el hardware, sobre el ST7796S — no tiene sentido evaluarlo en un monitor.
+- **Calidad a q = 0.620 sobre la pantalla real.** Hay tres casos medidos detrás, y el suelo no es raro: `IMG_1473` (tirol blanco, 40.3 KB contra 28.5 de presupuesto), una malla metálica perforada (43.0 KB) y un perro sobre césped (**50.7 KB**, el récord). Los tres son textura fina en todo el encuadre. Puede haber bloqueo visible. Se juzga cuando llegue el hardware, sobre el ST7796S — no tiene sentido evaluarlo en un monitor.
 
 #### El subsampling: nota de alcance, no pendiente
 
@@ -414,6 +429,8 @@ La dirección contraria no necesita contrapeso: **la subida siempre la dispara u
 
 **Corte tras dos fallos de red seguidos.** Con el módem apagado, 30 fotos por el timeout serían cinco minutos de machacar. Las que no se llegaron a intentar **se quedan en `lista`, no en `fallo`**, así que volver a tocar «Subir al marco» las retoma tal cual.
 
+**Y el corte se anuncia como lo que es: un hecho de la tanda, no de dos fotos.** Verificado en placa, y el primer intento se quedó corto: decir «2 fotos no se pudieron subir, tócalas para ver por qué» es correcto y a la vez inútil justo aquí, porque no explica por qué la subida se detuvo antes de tiempo y esconde en el detalle la única causa sobre la que quien sube **puede actuar**. El aviso de la rejilla dice la causa completa, que el resto de las fotos siguen ahí, y **nombra el botón** con el que se reanuda. Los demás fallos sí son por foto y su motivo se queda en el detalle.
+
 **Sin reintento automático.** Un reintento silencioso enmascara justo los dos códigos que tienen que gritar, y ante una caída real de red el segundo intento inmediato falla igual. El reintento es un toque, y devuelve a `lista` solo los fallos que se pueden reintentar — «se reintentan solo esas, no la tanda completa», sin una segunda ruta de código.
 
 #### Detalles que no se deducen
@@ -424,11 +441,19 @@ La dirección contraria no necesita contrapeso: **la subida siempre la dispara u
 
 **Cancelar corta al terminar la foto en curso; no aborta el multipart en vuelo.** Abortarlo deja la duda de si la foto aterrizó o no, y a 34 KB la espera es de menos de un segundo. **Lo ya subido se conserva**: está en la tarjeta del marco y es trabajo válido.
 
-**La pestaña en segundo plano no lleva lógica propia, y es una decisión.** En iOS el JS se suspende y el `fetch` puede morir o sobrevivir; las dos salidas ya están cubiertas. Si muere, esa foto queda en `fallo` reintentable y el corte por dos seguidos evita que la tanda se desangre; si sobrevive, el bucle continúa al despertar. Bajo diagnóstico se anota si la pestaña estuvo oculta durante la subida, que es el dato que falta para decidir si algún día hace falta más.
+**La pestaña en segundo plano no lleva lógica propia, y ahora está medido que no hace falta.** En un iPhone 11, con una tanda de 30 en curso y el teléfono **bloqueado dos minutos**: la subida se pausa, y al desbloquear continúa donde iba. Ni una foto perdida, ni un `fallo`.
+
+Lo que se estaba arriesgando no era que el `fetch` muriera —eso ya estaba cubierto: esa foto quedaría en `fallo` reintentable y el corte por dos seguidos evitaría que la tanda se desangre— sino lo contrario: que el **timer del timeout siguiera corriendo mientras el JS dormía** y marcara como caída una foto que estaba perfectamente en vuelo. No pasa: se suspenden los dos juntos. Es la misma propiedad que hace seguro el timeout, «los timers estrangulados disparan tarde, nunca antes», llevada al extremo de dos minutos.
+
+Bajo diagnóstico se anota cuántas fotos se subieron con la pestaña oculta, por si algún día el comportamiento cambia.
 
 **El progreso es por foto, nunca dentro del archivo.** `fetch()` no reporta progreso de subida, y los *request streams* con `duplex:"half"` no están en WebKit. A 34 KB sobre LAN el progreso intra-archivo duraría décimas de segundo. Nada de `XMLHttpRequest` por eso.
 
-**El orden del manifiesto no se comprueba en producción.** Lo garantizan la concurrencia 1 y el contador monótono del ESP32 (§3), y un desajuste no produciría ninguna acción que la persona pueda tomar. Bajo diagnóstico sí hay un botón que lo verifica contra `/list`.
+**El orden del manifiesto es el de la rejilla solo si no falla ninguna.** Medido en placa: de una tanda de 10 con tres fallos provocados, las siete que subieron a la primera se llevaron los nombres `001`–`007` y **las tres del reintento se llevaron `008`–`010`, al final**. El contador del ESP32 no retrocede (§3) y no puede: reutilizar números daría colisiones. O sea que un reintento reordena la reproducción.
+
+Se acepta tal cual. Arreglarlo obligaría a resubir la tanda entera por una foto que falló, que es exactamente lo que este documento prohíbe dos párrafos más arriba, y el efecto visible es que unas fotos salen en otro orden en un marco que las pasa en bucle. Lo que **no** se acepta es que el diagnóstico lo reporte como avería: el botón de comprobar orden dice «esperado: hubo reintentos» cuando el desajuste tiene esa causa.
+
+**No se comprueba en producción**, porque un desajuste no produce ninguna acción que la persona pueda tomar. Bajo diagnóstico sí hay un botón que lo verifica contra `/list`.
 
 **La verificación de integridad es síncrona dentro del bucle, y detrás del diagnóstico.** Vuelve a pedir la foto por `/photo` y compara los bytes contra el blob que se subió. Síncrona no es descuido: un servidor que comparta el buffer entre `/photo` y `/upload` responde `503` a las lecturas mientras hay una subida en curso, así que lanzarla en paralelo para no frenar la tanda se comería `503` sistemáticos. Y **un `404` aquí no es corrupción** —es que el servidor no retuvo esa foto—, así que se reporta distinto de «difiere en el byte N»; confundirlos es salir a perseguir un bug que no existe.
 
@@ -741,7 +766,7 @@ Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en
 
 2. **Página web con redimensionado por Canvas**, en este orden: lector EXIF → escalador → encoder → rejilla y cola → editor de recuadro → capa de red → empaquetado.
 
-   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, editor de recuadro con «quitar foto», y **la capa de red contra `/upload`** — bucle propio con concurrencia 1, timeout por foto, los ocho desenlaces de la tabla de §4, corte por red caída, reintento de solo las que fallaron y verificación de integridad bajo diagnóstico. 82 comprobaciones automatizadas en Chrome, 36 de ellas de la capa de red.
+   **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, editor de recuadro con «quitar foto», y **la capa de red contra `/upload`** — bucle propio con concurrencia 1, timeout por foto, los ocho desenlaces de la tabla de §4, corte por red caída, reintento de solo las que fallaron y verificación de integridad bajo diagnóstico. 84 comprobaciones automatizadas en Chrome, 38 de ellas de la capa de red.
 
    **Falta:** el empaquetado (gzip → array de C en PROGMEM), y medir la subida en el iPhone contra el banco.
 

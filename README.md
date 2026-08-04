@@ -141,11 +141,14 @@ empaquetado. Medido en un iPhone 11, sobre Safari de iOS:
 - Rejilla con multi-selección, cola con estado por foto, y editor de recuadro 2:3
   propio —sin dependencias— con recorte reversible.
 
-Escrita pero **todavía sin correr en el teléfono**: la subida de una en una contra
-`POST /upload`, con timeout, reintento de solo las que fallaron y verificación de
-integridad byte a byte bajo diagnóstico.
+- Subida de una en una contra `POST /upload`, con timeout, reintento de solo las
+  que fallaron y verificación de integridad byte a byte. **Medida contra el banco
+  sobre un ESP32 real**: tanda de 30 en 9444 ms, 315 ms por foto, 107.9 KB/s, e
+  integridad byte a byte en todas. Probados en placa el `413`, el `507`, el `500`
+  con reintento parcial, el timeout, el corte por WiFi caído, y un **reinicio del
+  marco a media tanda** del que la página salió sin perder una sola foto.
 
-**82 comprobaciones automatizadas** sobre Chrome sin cabeza, sin dependencias:
+**84 comprobaciones automatizadas** sobre Chrome sin cabeza, sin dependencias:
 
 ```bash
 node web/test/correr.js
@@ -155,12 +158,12 @@ node web/test/correr.js
 
 **Sin hardware nuevo:**
 
-- **Empaquetado de la página**: gzip → array de C en PROGMEM. Son 29.2 KB
+- **Empaquetado de la página**: gzip → array de C en PROGMEM. Son 30.6 KB
   gzipeados, o sea ~150 KB de fuente de C que cambia entera al tocar una línea —
   hay que decidir antes si se versiona o se genera en el build.
-- **Medir la subida en el iPhone contra el banco.** Lo único que no puede simular
-  el arnés: la tanda de 30 real, y qué pasa cuando la pestaña se va a segundo
-  plano a media subida.
+- **Nada más.** La medición contra el banco ya se hizo, incluida la pestaña en
+  segundo plano: con el teléfono bloqueado dos minutos, el `fetch` y el reloj del
+  timeout se suspenden juntos y la tanda continúa al desbloquear.
 
 **Con los componentes en mano**, y en este orden:
 

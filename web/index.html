@@ -75,6 +75,9 @@
     background:#fdf6e6;border:1px solid #e8d5a3;border-radius:6px;
     padding:9px 11px;margin:10px 0 0;
   }
+  /* Ámbar es «ojo con esto»; rojo es «esto no se subió». Son avisos distintos y
+     pueden salir los dos a la vez. */
+  .aviso.mal{color:var(--err);background:#fdecec;border-color:#e8b3b3}
 
   /* ── Rejilla de la tanda ─────────────────────────────────────────────── */
   .barra{display:flex;align-items:center;gap:10px;margin:0 0 12px}
@@ -169,6 +172,8 @@
 
   .volver{margin:0 0 12px}
   .hint{font-size:12.5px;color:var(--ink-soft);margin:10px 0 0}
+  /* El resumen de diagnóstico son dos medidas distintas, una por renglón. */
+  #resumenTanda{white-space:pre-line}
   code{font:12px ui-monospace,Menlo,Consolas,monospace;background:#e3e6e9;padding:1px 4px;border-radius:3px}
 </style>
 </head>
@@ -197,6 +202,7 @@
     </div>
     <div class="rejilla" id="rejilla"></div>
     <p class="aviso" id="avisoFranjas" hidden></p>
+    <p class="aviso mal" id="avisoFallos" hidden></p>
     <p class="hint" id="resumenTanda" hidden></p>
     <div id="diagFiles" hidden>
       <button type="button" class="btn-min" id="btnProbarFiles">Releer archivos</button>
@@ -776,7 +782,7 @@ async function verificarIntegridad(item){
     const res = await fetch(`${CFG.BASE}/photo?n=${item.nombreRemoto}`);
     if (res.status === 404) {
       /* NO es corrupción, y la distinción importa: el banco solo retiene lo que le
-         cabe, y el peor caso medido (43.0 KB) es una observación, no una cota. Se
+         cabe, y el peor caso medido (50.7 KB) es una observación, no una cota. Se
          nombra al banco para no salir a perseguir un bug que no existe. */
       item.verif = `no retenida por el banco · ${kb(item.blob.size)} (404)`;
       return;
@@ -865,7 +871,10 @@ function repintar(item){
 
 async function correrSubidas(){
   if (cola.subiendo || cola.corriendo) return;
-  cola.subiendo = true; cola.cancelSub = false;
+  cola.subiendo = true; cola.cancelSub = false; cola.corteRed = false;
+  // El resultado de «Comprobar orden» habla del estado ANTERIOR de la tanda: si se
+  // queda pegado, se lee como si describiera lo que acaba de pasar.
+  $("salidaFiles").textContent = "";
   let seguidosRed = 0;
   try {
     for (;;) {
@@ -889,8 +898,11 @@ async function correrSubidas(){
       /* El 507 corta en el acto, y dos fallos de red seguidos también: con el módem
          apagado, 30 fotos × 10 s serían cinco minutos de machacar. Las que no se
          llegaron a intentar siguen en LISTA —no en FALLO—, así que «Subir al marco»
-         las retoma tal cual. */
-      if (r.corte || seguidosRed >= 2) break;
+         las retoma tal cual.
+         El corte por red se anota aparte porque es un hecho de la TANDA, no de dos
+         fotos, y es el único caso en que quien sube puede hacer algo al respecto. */
+      if (r.corte) break;
+      if (seguidosRed >= 2) { cola.corteRed = true; break; }
     }
   } finally {
     cola.subiendo = false;
@@ -913,7 +925,15 @@ const arrancarSubidas = () => correrSubidas().catch(err => { console.error(err);
    orden de la rejilla lo rompería. Todo pasa por el mismo bucle. */
 function subirTanda(){
   for (const i of cola.items)
-    if (i.estado === ESTADO.FALLO && i.reintentable) { i.estado = ESTADO.LISTA; pintarItem(i); }
+    if (i.estado === ESTADO.FALLO && i.reintentable) {
+      i.estado = ESTADO.LISTA;
+      // Solo para el diagnóstico del orden: una foto reintentada se lleva un
+      // nombre POSTERIOR al de las que subieron a la primera, así que el orden
+      // del manifiesto deja de ser el de la rejilla. Ver el botón «Comprobar
+      // orden» y §3 — el contador del ESP32 no retrocede.
+      i.reintentado = true;
+      pintarItem(i);
+    }
   arrancarSubidas();
 }
 
@@ -1226,6 +1246,22 @@ function pintarBarra(interrumpida){
       : `${conFranjas} de ${listas} fotos se verán con franjas negras. Tócalas para ver cómo quedan.`;
   }
 
+  /* Fallos de subida: el motivo vive en el detalle de cada foto, porque puede ser
+     distinto en cada una. Lo que hacía falta aquí es DECIR QUE HAY ALGO QUE VER —
+     el recuento del estado va en gris pequeño y no invita a tocar nada—. Mismo
+     patrón que el aviso de franjas, y en rojo porque no es lo mismo. */
+  const af2 = $("avisoFallos");
+  af2.hidden = !fallos || cola.subiendo;
+  if (!af2.hidden)
+    /* El corte por red se dice completo y NOMBRANDO el botón: es un hecho de la
+       tanda —se detuvo antes de tiempo— y es el único fallo en el que quien sube
+       puede hacer algo. Los demás son por foto y su motivo vive en el detalle. */
+    af2.textContent = cola.corteRed
+      ? "No se pudo conectar con el marco. Se detuvo la subida; el resto de las fotos siguen aquí. Revisa el WiFi y vuelve a tocar «Subir al marco»."
+      : fallos === 1
+      ? "Una foto no se pudo subir. Tócala para ver por qué."
+      : `${fallos} fotos no se pudieron subir. Tócalas para ver por qué.`;
+
   /* La compuerta va contra null, NUNCA por veracidad: "" es el valor de producción
      y es falsy — un `CFG.BASE ? …` apagaría esto justo en el marco. */
   const hint = $("hintTanda");
@@ -1245,14 +1281,35 @@ function pintarBarra(interrumpida){
     hint.textContent = "Se suben de una en una, en el orden de la rejilla.";
   }
 
-  // Resumen de tanda: solo diagnóstico.
+  /* Resumen de tanda: solo diagnóstico, y en dos líneas porque son dos medidas
+     distintas. La de subida tiene que sobrevivir a que ya no quede nada en LISTA
+     —si no, desaparece justo al terminar la tanda, que es cuando se lee— y por eso
+     la condición mira también las subidas. */
   const res = $("resumenTanda");
-  res.hidden = !(CFG.DIAG && listas);
+  res.hidden = !(CFG.DIAG && (listas || subidas));
   if (!res.hidden) {
-    const l = cola.items.filter(i => i.estado === ESTADO.LISTA);
-    const peso = l.reduce((s, i) => s + i.blob.size, 0);
-    const t = l.reduce((s, i) => s + i.tTotal, 0);
-    res.textContent = `${listas} fotos · ${kb(peso)} · ${ms(t)} en total · ${ms(t / listas)} por foto`;
+    const lineas = [];
+    const pend = cola.items.filter(i => i.estado === ESTADO.LISTA);
+    if (pend.length) {
+      const peso = pend.reduce((a, i) => a + i.blob.size, 0);
+      const t = pend.reduce((a, i) => a + i.tTotal, 0);
+      lineas.push(`${pend.length} listas · ${kb(peso)} · ${ms(t)} en preparar · ${ms(t / pend.length)} por foto`);
+    }
+    const sub = cola.items.filter(i => i.estado === ESTADO.SUBIDA);
+    if (sub.length) {
+      const peso = sub.reduce((a, i) => a + i.blob.size, 0);
+      const t = sub.reduce((a, i) => a + (i.tSubida || 0), 0);
+      // Las que no verificaron van NOMBRADAS. Un «29/30» sin decir cuál obliga a
+      // abrir treinta detalles, que es justo lo que este resumen viene a evitar.
+      const mal = sub.filter(i => !(i.verif || "").startsWith("ok"));
+      const ocultas = sub.filter(i => i.oculta).length;
+      lineas.push(`${sub.length} subidas · ${kb(peso)} · ${ms(t)} en subir · ${ms(t / sub.length)} por foto · ` +
+                  `${kb(peso / (t / 1000))}/s · integridad ${sub.length - mal.length}/${sub.length}` +
+                  (ocultas ? ` · ${ocultas} con la pestaña oculta` : ""));
+      for (const i of mal)
+        lineas.push(`  #${cola.items.indexOf(i) + 1} ${i.nombreRemoto} · ${kb(i.blob.size)} · ${i.verif}`);
+    }
+    res.textContent = lineas.join("\n");
   }
 }
 
@@ -1350,6 +1407,9 @@ function pintarDetalle(item){
   const aviso = $("aviso");
   const texto = item.estado === ESTADO.FALLO ? item.error : item.aviso;
   aviso.hidden = !texto;
+  // Rojo para un fallo de subida, ámbar para el aviso de franjas — el mismo par de
+  // colores que la rejilla, o el detalle contradice al mosaico que lo abrió.
+  aviso.className = "aviso" + (item.estado === ESTADO.FALLO ? " mal" : "");
   if (texto) aviso.textContent = texto;
 
   // El detalle numérico vive en el panel de diagnóstico, que se apaga en producción.
@@ -1645,6 +1705,7 @@ function limpiarTanda(){
   for (const item of cola.items) if (item.url) URL.revokeObjectURL(item.url);
   cola.items = [];
   $("avisoTope").hidden = true;
+  $("salidaFiles").textContent = "";   // hablaba de una tanda que ya no existe
   pintarBarra();
 }
 
@@ -1653,6 +1714,7 @@ $("file").addEventListener("change", e => {
   e.target.value = "";                     // sin esto, reelegir el MISMO archivo no dispara change
   if (!elegidas.length) return;
   $("avisoTope").hidden = true;
+  $("salidaFiles").textContent = "";   // hablaba de la tanda anterior
   cerrarDetalle();
 
   /* Anexar, NUNCA reemplazar. Abrir el selector no puede destruir fotos ya
@@ -1751,10 +1813,15 @@ $("btnProbarOrden").addEventListener("click", async () => {
     const nombres = (await res.text()).split("\n").filter(Boolean);
     const mios = cola.items.filter(i => i.nombreRemoto).map(i => i.nombreRemoto);
     const pos  = mios.map(n => nombres.indexOf(n));
+    /* «Fuera de orden» NO es necesariamente un fallo: un reintento manda al final
+       del manifiesto las fotos que fallaron, porque el contador del ESP32 no
+       retrocede. Se dice, o se sale a perseguir un bug que no existe. */
+    const huboReintento = cola.items.some(i => i.reintentado);
     out.textContent = !mios.length ? "todavía no hay fotos subidas"
       : `${nombres.length} en el manifiesto · ${mios.length} de esta tanda · ` +
         (pos.some(p => p < 0) ? "FALTA alguna"
-         : pos.every((p, i) => i === 0 || p > pos[i - 1]) ? "en orden" : "FUERA DE ORDEN");
+         : pos.every((p, i) => i === 0 || p > pos[i - 1]) ? "en orden"
+         : "FUERA DE ORDEN" + (huboReintento ? " (esperado: hubo reintentos)" : ""));
   } catch (e) { out.textContent = "no se pudo leer /list — " + e.name; }
   btn.disabled = false;
 });

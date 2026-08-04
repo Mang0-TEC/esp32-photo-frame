@@ -252,6 +252,8 @@
      "la foto del 413 queda en FALLO y NO reintentable");
   ok(!/\d/.test(cola.items[1].error), "su mensaje al usuario no lleva un solo número");
   ok($$("btnSubirTanda").hidden, "y sin nada reintentable el botón de subir desaparece");
+  ok(!$$("avisoFallos").hidden && /Tócala/.test($$("avisoFallos").textContent),
+     "la rejilla avisa del fallo y manda al detalle, que es donde está el motivo");
 
   // ── Red caída: corta tras dos seguidos, el resto sigue en LISTA ─────────────
   limpiarTanda();
@@ -264,6 +266,8 @@
   ok(cola.items.filter(i => i.estado === "fallo").length === 2, "corta tras dos fallos de red seguidos");
   ok(cola.items.filter(i => i.estado === "lista").length === 2,
      "y las que no se intentaron siguen en LISTA, no en FALLO");
+  ok(/Revisa el WiFi/.test($$("avisoFallos").textContent),
+     "la tanda dice que se cortó por la red y qué hacer, no solo «tócalas»");
   responder = responderOk;
   await subirYEsperar();
   ok(cola.items.every(i => i.estado === "subida"), "volver a tocar «Subir» termina la tanda");

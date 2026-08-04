@@ -171,6 +171,36 @@ Resistencias **en serie con cada color, nunca en la pata común**. Una sola resi
 
 Con cátodo común el PWM funciona en sentido intuitivo: `ledcWrite(canal, 0-255)` directo, sin invertir. El ESP32 tiene 16 canales LEDC; se asignan tres.
 
+#### Las resistencias están dimensionadas contra 5 V, y el GPIO da 3.3 V
+
+**Sin medir, y es la primera medición que hay que hacer.** Con los Vf genéricos de
+arriba —**de ficha, no medidos**— y un GPIO en 3.3 V:
+
+| Canal | R | Vf asumido | Margen | Corriente |
+|---|---|---|---|---|
+| Rojo | 1 kΩ | ~2.0 V | 1.3 V | **1.3 mA** |
+| Verde | 470 Ω | ~3.0 V | 0.3 V | **0.64 mA** |
+| Azul | 470 Ω | ~3.0 V | 0.3 V | **0.64 mA** |
+
+Dos consecuencias, y la segunda es un riesgo real:
+
+1. **El rojo lleva el doble de corriente que los otros dos**, y encima es el color
+   más eficiente por mA. El blanco `(255,255,255)` va a salir rosa y el ámbar de
+   «escribiendo en SD» mucho más rojo de lo que dice su fila. Por eso `LedRGB`
+   lleva `escala[3]`, un factor por canal, en identidad hasta que se mida.
+2. **Verde y azul pueden no encender de forma útil.** 0.3 V de margen sobre el Vf
+   es tan poco que la corriente la gobierna la curva exponencial del diodo y no la
+   resistencia: varía entre unidades y con la temperatura, y si el Vf real resulta
+   ser 3.2 V la corriente cae a ~0.2 mA. El 470 Ω tiene sentido contra un riel de
+   5 V; contra 3.3 V no está limitando gran cosa.
+
+**Cómo se resuelve, con lo que ya está soldado:** `pio run -e led -t upload -t
+monitor` desde `firmware/banco/`, teclas `r`, `g` y `b` para encender un canal a la
+vez, y el multímetro **midiendo la caída sobre cada resistencia** → corriente real.
+Si verde y azul salen inservibles, la salida es bajarles la resistencia (220 Ω o
+100 Ω) y **corregir la fila 12 de la tabla B**, que hoy los da por confirmados.
+Va antes que cualquier ajuste fino de color, porque puede mover la lista de compras.
+
 ### Conexiones del display (8 cables)
 
 `GND`, `VIN`, `SCL`, `SDA`, `RST`, `DC`, `CS`, `BL`
@@ -302,6 +332,29 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 `firmware/banco/` es un proyecto PlatformIO **aparte**, con su propio `platformio.ini`, su `src/` y su `.pio/`. Implementa el contrato HTTP de §4 sin SD y sin display, para desarrollar y medir la capa de red de la página contra el ESP32 real. No es la base del firmware final y no toca `[env:marco]`.
 
 Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@3.12.0` y `AsyncTCP@3.5.0`. **Al actualizar cualquiera de las tres aquí, sincronizar allá.** Si divergen, el banco deja de probar lo que el firmware va a correr — que es el único motivo de que ese mock esté en el ESP32 y no en Python. El archivo del banco lleva el aviso en su encabezado, pero eso se lee estando ya dentro; el desfase se produce editando **este** lado.
+
+#### `firmware/banco/` tiene dos envs, y solo uno usa GPIOs
+
+| env | Qué prueba | GPIOs | `lib_deps` |
+|---|---|---|---|
+| `mock` | El contrato HTTP de §4, sin SD y sin display | ninguno | las dos async, duplicadas a mano |
+| `led` | `LedRGB` contra el LED real | 25, 33, 4 | ninguna |
+
+`default_envs = mock`, así que `pio run` a secas sigue compilando solo el banco de
+red; el del LED se pide con `-e led`. Cada uno lleva su `build_src_filter` — sin
+eso los dos `setup()` acaban en el mismo binario.
+
+**`env:led` compila `firmware/src/LedRGB.cpp` en su sitio, sin copiarlo**
+(`build_src_filter = +<led.cpp> +<../../src/LedRGB.cpp>`). El banco tiene que
+probar el mismo archivo que va a correr en el marco. Y como no usa ninguna
+librería, la advertencia de sincronización manual de arriba **no le aplica**: no
+duplica ninguna versión.
+
+Lo que responde, y que no se puede decidir desde el escritorio: el pinout medido
+del LED, la corriente real por canal (ver la nota de las resistencias, arriba), si
+a igual duty los tres canales dan el mismo brillo, y si un fade lineal en duty se
+**ve** lineal o hace falta gamma. Lleva además una autocomprobación de la
+interpolación que corre sin mirar el LED.
 
 #### Cómo se apunta la página al banco
 

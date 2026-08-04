@@ -700,11 +700,56 @@ Un solo LED RGB de cátodo común sustituye a los dos LEDs fijos originalmente p
 
 **El rojo es la ganancia real:** con dos LEDs fijos no había forma de distinguir "error de SD" de "error de WiFi" ni de mostrar arranque en progreso.
 
+### Cada estado es una fila de una tabla, no una rama de un switch
+
+Color, semiperiodo de parpadeo y si el estado se apaga solo viven en `TABLA`, en
+`firmware/src/LedRGB.cpp`. Es la misma información para todos los estados, y
+tenerla en dos sitios ya había divergido en la primera versión: el código que
+devolvía el LED a su color tras una interacción restauraba «ámbar» como color
+fijo, cuando la definición del estado dice parpadeo.
+
+El array va **sin tamaño explícito**, con un `static_assert` contra el centinela
+del enum. Declararlo `[TOTAL]` deja que un estado nuevo sin fila se rellene de
+ceros en silencio — y un estado negro que ni parpadea ni se apaga se ve
+exactamente igual que uno que nadie disparó.
+
 ### Debe apagarse tras el arranque
 
 Un punto de color respirando en la sala de noche es exactamente lo que no se quiere en un regalo. **Los LEDs sirven durante el armado y la depuración**, no en operación normal. El estado de WiFi se comunica mejor con un icono discreto en la propia pantalla.
 
+**Los estados que parpadean también se apagan**, y esto no es obvio en el código:
+la rutina de refresco atiende el parpadeo con un retorno temprano —el ritmo tiene
+que ser exacto y no puede quedar detrás de un fade—, así que **el auto-off tiene
+que evaluarse ANTES de esa rama**. Con el orden inverso, que fue el primero que se
+escribió, una subida fallida dejaba el rojo latiendo a 150 ms toda la noche: los
+estados con parpadeo llevaban su bandera de auto-off puesta y no la alcanzaban
+nunca. Es la regla 3 entera, perdida por el orden de dos bloques.
+
+**La única excepción es «sin tarjeta», y tiene fecha de caducidad.** Hoy el
+display todavía no existe y el LED es el único canal capaz de decirlo; un marco
+sin tarjeta además ya está visiblemente roto. En cuanto el firmware sepa pintar
+ese error en pantalla, esa fila pasa a apagarse como todas las demás.
+
+### El fade interpola desde un origen congelado
+
+`startFade()` guarda el color de partida en `_from*`. Interpolar desde el color
+**actual** —que la escritura al PWM reescribe en cada paso— mueve el origen bajo
+la cuenta y convierte la rampa en una exponencial: con 350 ms declarados el LED
+llegaba a 252 de 255 a los 170 ms. No se ve mirando el LED, solo cronometrándolo,
+y deja las constantes de duración sin calibrar nada. La interpolación está
+extraída a una función pura (`LedRGB::lerp`) precisamente para poder comprobarla
+sin placa; el banco y el firmware la verifican al arrancar.
+
+### Los tres canales no dan el mismo brillo al mismo duty
+
 Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en cara trasera o inferior.
+
+Pero las resistencias son **distintas por diseño** y los voltajes directos también,
+así que a igual duty el brillo no es igual: el blanco tira a rosa y el ámbar sale
+más rojo de lo que dice su fila. Por eso `LedRGB` lleva un vector `escala[3]` de
+compensación por canal, en identidad hasta que se mida. **Los valores salen del
+banco del LED**, no del escritorio. Ver la nota de corriente por canal en el BOM —
+es la primera medición que hay que hacer, porque puede mover la lista de compras.
 
 ---
 

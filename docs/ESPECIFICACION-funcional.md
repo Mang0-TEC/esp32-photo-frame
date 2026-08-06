@@ -18,7 +18,7 @@ Un marco comercial de 10" cuesta $1,000–1,500 MXN y siempre dará más pulgada
 - **Sin app de nube, sin cuenta, sin suscripción.** Muchos marcos comerciales exigen registrarse en un servicio propietario.
 - Está hecho por quien lo regala.
 
-Costo final: **$387 MXN** en componentes nuevos, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y sensor de luz, más $126 del ESP32 de reposición — la unidad USB-C que había en inventario resultó defectuosa.
+Costo final: **$387 MXN** en componentes nuevos, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y sensor de luz, más $126 del ESP32 de reposición — la unidad USB-C que había en inventario resultó defectuosa. De esos, el ESP32 **ya está comprado**: lo que queda por gastar son los $261.
 
 ### Restricciones de diseño derivadas del contexto
 
@@ -732,9 +732,17 @@ del enum. Declararlo `[TOTAL]` deja que un estado nuevo sin fila se rellene de
 ceros en silencio — y un estado negro que ni parpadea ni se apaga se ve
 exactamente igual que uno que nadie disparó.
 
+**Los ocho estados están verificados de vista sobre el LED real**, uno a uno desde
+el banco: cada color y cada ritmo se leen sin ambigüedad. El único valor que hubo
+que corregir fue el ámbar, que en el escritorio se había puesto en `(255, 80, 0)`
+suponiendo canales equilibrados y sobre el hardware tiraba a verde — quedó en
+`(255, 70, 0)`, y **es un número que depende de las resistencias**: ver el BOM.
+
 ### Debe apagarse tras el arranque
 
 Un punto de color respirando en la sala de noche es exactamente lo que no se quiere en un regalo. **Los LEDs sirven durante el armado y la depuración**, no en operación normal. El estado de WiFi se comunica mejor con un icono discreto en la propia pantalla.
+
+**Verificado en placa:** un estado con parpadeo y auto-off se apaga solo a los 30 s.
 
 **Los estados que parpadean también se apagan**, y esto no es obvio en el código:
 la rutina de refresco atiende el parpadeo con un retorno temprano —el ritmo tiene
@@ -759,6 +767,12 @@ y deja las constantes de duración sin calibrar nada. La interpolación está
 extraída a una función pura (`LedRGB::lerp`) precisamente para poder comprobarla
 sin placa; el banco y el firmware la verifican al arrancar.
 
+**Y el fade lineal en duty se ve lineal: no hace falta tabla de gamma.** Medido
+con la rampa del banco sobre el blanco compuesto, que es el caso más exigente.
+Era la duda razonable —8 bits de duty lineal sobre un LED suelen verse como un
+salto al principio y una meseta al final— y la respuesta en este hardware, a estas
+corrientes tan bajas, es que no. No añadir una tabla de gamma «por si acaso».
+
 ### El fade se termina a la fuerza justo antes de `autoConnect()`
 
 `setup()` llama a `asentarLed(400)` inmediatamente antes de `wm.autoConnect()`: un bucle que corre `led.update()` y `delay(10)` durante 400 ms para que el fade del LED termine de verdad en vez de quedar congelado a medio camino mientras `autoConnect()` bloquea el hilo —a veces por minutos, si levanta el portal—. Sin esto, lo que se queda pintado en el LED durante todo ese tiempo es el frame de un fade a medias, o directamente negro.
@@ -767,14 +781,21 @@ Es el **último código que corre antes del punto en el que el issue #1797 repor
 
 ### Los tres canales no dan el mismo brillo al mismo duty
 
-Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en cara trasera o inferior.
+Resistencias de valor alto (220 Ω / 470 Ω) para que queden tenues, y montaje en cara trasera o inferior.
 
-Pero las resistencias son **distintas por diseño** y los voltajes directos también,
-así que a igual duty el brillo no es igual: el blanco tira a rosa y el ámbar sale
-más rojo de lo que dice su fila. Por eso `LedRGB` lleva un vector `escala[3]` de
-compensación por canal, en identidad hasta que se mida. **Los valores salen del
-banco del LED**, no del escritorio. Ver la nota de corriente por canal en el BOM —
-es la primera medición que hay que hacer, porque puede mover la lista de compras.
+A igual duty el brillo **no** es igual: las resistencias son distintas por diseño y
+los voltajes directos también. Lo que no se deduce del cálculo es hacia dónde
+desequilibra. Sobre el papel el rojo llevaba el doble de corriente que los otros
+dos y se predijo un blanco rosado; en placa **el rojo se ve claramente más
+apagado**, porque el ojo pesa el verde unas cuatro veces más (curva fotópica) y
+porque el verde y el azul InGaN son más eficientes por mA. Se corrigió en
+hardware, bajando el rojo de 1 kΩ a 220 Ω, y con eso el blanco sale blanco.
+
+`LedRGB` lleva además un vector `escala[3]` de compensación por canal, **en
+identidad**: el equilibrio se resolvió con resistencias porque bajar verde y azul
+por software habría igualado los canales tirando brillo, y el conjunto ya es tenue
+a propósito. La perilla se queda para el ajuste fino tras montar la carcasa.
+Detalle y cifras en el BOM.
 
 ---
 

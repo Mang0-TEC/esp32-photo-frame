@@ -2,7 +2,7 @@
 
 **Proyecto:** Marco de fotos digital con servidor local WiFi
 **Presupuesto objetivo:** $700 MXN
-**Costo real a comprar:** $387 MXN
+**Costo real a comprar:** $261 MXN
 
 ---
 
@@ -13,18 +13,22 @@
 | 1 | Módulo TFT ST7796S 3.5" IPS 320×480 SPI | AR3952 | Unit Electronics | 1 | $196 |
 | 2 | Lector de Memorias SD H95 | AR0532 | Unit Electronics | 1 | $23 |
 | 3 | GY-302 Sensor de intensidad luminosa BH1750 | — | Unit Electronics | 1 | $42 |
-| 4 | ESP32 DevKit V1 **WROOM**, USB-C | — | Por definir | 1 | $126 |
-| | **Subtotal** | | | | **$387** |
+| | **Subtotal** | | | | **$261** |
 
-**Por qué el ESP32 está aquí y no en inventario:** la unidad USB-C que había
-resultó defectuosa — no transmite ni sincroniza con esptool, ni en macOS ni en
-Windows, pese a 3.3 V correctos, `EN` liberado y loopback TX0↔RX0 exitoso.
-Diagnóstico cerrado, no se reabre. Es reposición de una unidad fallada, no un
-componente que faltara en el diseño original: de ahí que el presupuesto pasara
-de $261 a $387.
+**El ESP32 de reposición ya se compró** y pasó a la tabla B (fila 16). Estaba
+aquí porque la unidad USB-C que había resultó defectuosa — no transmitía ni
+sincronizaba con esptool, ni en macOS ni en Windows, pese a 3.3 V correctos, `EN`
+liberado y loopback TX0↔RX0 exitoso. Ese diagnóstico sigue cerrado: la unidad
+nueva es **otra placa física**, con puente y revisión de silicio distintos, no la
+misma que volvió a probarse. Con la compra hecha, el pendiente vuelve a los $261
+de pantalla, lector y sensor.
 
 **Debe ser WROOM, no WROVER.** La WROVER ocupa GPIO16 y GPIO17 con la PSRAM, y
-ahí van `RST` y `DC` del display.
+ahí van `RST` y `DC` del display. **Confirmado WROOM en la unidad nueva**, medido
+—no leído de la etiqueta— con `ESP.getPsramSize()` desde el banco del LED:
+`PSRAM 0 B`. GPIO16 y GPIO17 quedan libres y el mapa de pines cierra. esptool no
+reporta PSRAM, de ahí que la comprobación viva en el banco; sale gratis porque ese
+flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla entera.
 
 ---
 
@@ -39,10 +43,11 @@ ahí van `RST` y `DC` del display.
 | 9 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas |
 | 10 | Transistor PN2222A (NPN, TO-92) | ✔ Sustituye al 2N7000 |
 | 11 | LED RGB 5 mm **cátodo común** | ✔ Sustituye a los dos LEDs separados |
-| 12 | Resistencias 470 Ω ×2, 1 kΩ, 10 kΩ | ✔ Confirmado |
+| 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, así que **el Caso A del backlight necesita una tercera** para la base del PN2222A — confirmado que hay más en inventario. Ver la nota de corriente por canal, abajo |
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
 | 15 | Filamento PLA | Carcasa y bisel |
+| 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`), `/dev/cu.wchusbserial1110` — va literal en los dos `.ini` del banco, un glob no funciona. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
 La placa micro-USB **no es la unidad final**: micro-USB es mal conector para un
 objeto fijo 24/7 durante años; se afloja y su pad termina desprendiéndose del
@@ -169,37 +174,60 @@ Pinout medido de izquierda a derecha: **azul, verde, GND, rojo**. El común en t
 
 Resistencias **en serie con cada color, nunca en la pata común**. Una sola resistencia común haría que el brillo cambie según cuántos colores estén activos (el blanco saldría más tenue que el rojo). Además los voltajes directos difieren: rojo ~2.0 V, verde y azul ~3.0 V.
 
+**Valores finales: 220 Ω en rojo, 470 Ω en verde y azul.** El rojo empezó con 1 kΩ y hubo que bajarlo; el porqué está tres párrafos más abajo y no es el que dice el cálculo.
+
 Con cátodo común el PWM funciona en sentido intuitivo: `ledcWrite(canal, 0-255)` directo, sin invertir. El ESP32 tiene 16 canales LEDC; se asignan tres.
 
-#### Las resistencias están dimensionadas contra 5 V, y el GPIO da 3.3 V
+#### El rojo lleva 220 Ω, no 1 kΩ — y la razón contradice el cálculo
 
-**Sin medir, y es la primera medición que hay que hacer.** Con los Vf genéricos de
-arriba —**de ficha, no medidos**— y un GPIO en 3.3 V:
+**Resuelto en placa, y el resultado fue el contrario del previsto.** El cálculo
+sobre el papel decía esto, con los Vf de ficha —**asumidos, nunca medidos**— y un
+GPIO en 3.3 V:
 
-| Canal | R | Vf asumido | Margen | Corriente |
-|---|---|---|---|---|
-| Rojo | 1 kΩ | ~2.0 V | 1.3 V | **1.3 mA** |
-| Verde | 470 Ω | ~3.0 V | 0.3 V | **0.64 mA** |
-| Azul | 470 Ω | ~3.0 V | 0.3 V | **0.64 mA** |
+| Canal | R original | Vf asumido | Corriente calculada |
+|---|---|---|---|
+| Rojo | 1 kΩ | ~2.0 V | 1.3 mA |
+| Verde | 470 Ω | ~3.0 V | 0.64 mA |
+| Azul | 470 Ω | ~3.0 V | 0.64 mA |
 
-Dos consecuencias, y la segunda es un riesgo real:
+De ahí se predijo que el rojo dominaría y **que el blanco saldría rosa**. Es
+falso: encendiendo un canal a la vez desde el banco, **el rojo se ve claramente
+más apagado** que el verde y el azul, que salen intensos.
 
-1. **El rojo lleva el doble de corriente que los otros dos**, y encima es el color
-   más eficiente por mA. El blanco `(255,255,255)` va a salir rosa y el ámbar de
-   «escribiendo en SD» mucho más rojo de lo que dice su fila. Por eso `LedRGB`
-   lleva `escala[3]`, un factor por canal, en identidad hasta que se mida.
-2. **Verde y azul pueden no encender de forma útil.** 0.3 V de margen sobre el Vf
-   es tan poco que la corriente la gobierna la curva exponencial del diodo y no la
-   resistencia: varía entre unidades y con la temperatura, y si el Vf real resulta
-   ser 3.2 V la corriente cae a ~0.2 mA. El 470 Ω tiene sentido contra un riel de
-   5 V; contra 3.3 V no está limitando gran cosa.
+**Por qué el cálculo no bastaba: mide corriente, y lo que importa es brillo
+percibido.** Dos factores que no aparecen en la ley de Ohm y que van en la misma
+dirección:
 
-**Cómo se resuelve, con lo que ya está soldado:** `pio run -e led -t upload -t
-monitor` desde `firmware/banco/`, teclas `r`, `g` y `b` para encender un canal a la
-vez, y el multímetro **midiendo la caída sobre cada resistencia** → corriente real.
-Si verde y azul salen inservibles, la salida es bajarles la resistencia (220 Ω o
-100 Ω) y **corregir la fila 12 de la tabla B**, que hoy los da por confirmados.
-Va antes que cualquier ajuste fino de color, porque puede mover la lista de compras.
+- La curva fotópica del ojo vale ~1.0 a 555 nm (verde) y cae a ~0.27 a 630 nm
+  (rojo). A igual potencia radiada el verde se ve unas cuatro veces más.
+- Verde y azul son InGaN, bastante más eficientes por mA que el rojo AlGaInP, y
+  lo siguen siendo a corrientes bajas.
+
+Entre los dos, el doble de corriente en el rojo no compensa ni de lejos.
+
+**La corrección va en el rojo y es de hardware: 1 kΩ → 220 Ω**, que con el Vf
+asumido lo sube de 1.3 mA a ~5.9 mA. Con eso el blanco `(255,255,255)` **se ve
+blanco**, verificado a ojo. Se prefirió el hierro al software porque bajar verde y
+azul con `LedRGB::escala` habría igualado los canales tirando brillo, y el
+conjunto ya es tenue a propósito. `escala` se queda en identidad y sigue ahí como
+perilla para el ajuste fino que haga falta tras montar la carcasa.
+
+**El riesgo caro queda descartado:** verde y azul encienden bien e intensos, así
+que la hipótesis de que 0.3 V de margen sobre el Vf los dejara inservibles era
+infundada. Sus 470 Ω se quedan.
+
+**El ámbar hubo que recalibrarlo, y su valor depende de estas resistencias.** El
+`(255, 80, 0)` de la tabla de estados se eligió en el escritorio suponiendo
+canales equilibrados, y sobre el hardware real tiraba a verde — el peor fallo
+posible en esa fila, porque ámbar es «subiendo» y rojo es «falló» y tienen que
+distinguirse de un vistazo. Barrido con la tecla `c` del banco, el valor bueno es
+**`(255, 70, 0)`**. Vale para 220 Ω en el rojo y 470 Ω en el verde: **si esas
+resistencias cambian, hay que volver a barrerlo.**
+
+> **Lo que sigue sin medirse son las corrientes.** Todo lo de arriba se decidió
+> por observación visual del compuesto, que es el criterio correcto para el color
+> pero no da números. Las tres caídas sobre las resistencias, y el Vf real por
+> diferencia contra el GPIO, siguen pendientes de multímetro.
 
 ### Conexiones del display (8 cables)
 

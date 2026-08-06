@@ -57,6 +57,19 @@ static void autocomprobar() {
                 medioInv);
 }
 
+// WROOM o WROVER. Es requisito duro del BOM y no se ve en la etiqueta con la
+// fiabilidad suficiente: la WROVER ocupa GPIO16 y GPIO17 con la PSRAM, y ahí van
+// RST y DC del display. Descubrirlo después de soldar cuesta la pantalla entera,
+// y aquí sale gratis porque el flasheo del banco ya se iba a hacer.
+static void identificarPlaca() {
+  const uint32_t psram = ESP.getPsramSize();
+  const uint16_t rev = ESP.getChipRevision();  // IDF 5.x: mayor*100 + menor
+  Serial.printf("[placa] rev v%u.%u  flash %u MB  PSRAM %u B\n", rev / 100, rev % 100,
+                ESP.getFlashChipSize() / (1024 * 1024), psram);
+  Serial.printf("[placa] %s\n", psram ? "*** WROVER: PSRAM ocupa GPIO16/17, donde van RST y DC ***"
+                                      : "WROOM (sin PSRAM) — GPIO16/17 libres, como pide el BOM");
+}
+
 static void volcarTabla() {
   Serial.println("  #  estado             R    G    B   semi  autoOff");
   for (uint8_t i = 0; i < (uint8_t)LedRGB::State::TOTAL; i++) {
@@ -76,6 +89,7 @@ static void menu() {
   Serial.println(F("  0-7     cada estado de §9 (usa '?' para verlos)"));
   Serial.println(F("  a       WARNING y espera: a los 30 s tiene que APAGARSE aunque"));
   Serial.println(F("          esté parpadeando"));
+  Serial.println(F("  c R G B color crudo. El ámbar calibrado es 'c 255 70 0'"));
   Serial.println(F("  e R G B fija LedRGB::escala en caliente, p.ej. 'e 120 255 255'"));
   Serial.println(F("  ?       vuelca la tabla   ·   x  apaga"));
   Serial.println(F("─────────────────────────────────────────────────────────────"));
@@ -112,6 +126,17 @@ static void tecla(char c) {
     case 'f': rampa(); break;
     case '?': volcarTabla(); break;
 
+    // Barrido de color a mano. Existe para calibrar el ámbar de WARNING, que es
+    // el único color compuesto de la tabla: su (255,80,0) se eligió suponiendo
+    // canales equilibrados y el 80 hay que encontrarlo mirando, no calculándolo.
+    case 'c': {
+      const long r = Serial.parseInt(), g = Serial.parseInt(), b = Serial.parseInt();
+      led.setRaw(constrain(r, 0, 255), constrain(g, 0, 255), constrain(b, 0, 255));
+      Serial.printf("[raw] rgb(%ld,%ld,%ld)\n", constrain(r, 0, 255), constrain(g, 0, 255),
+                    constrain(b, 0, 255));
+      break;
+    }
+
     case 'e': {
       const long r = Serial.parseInt(), g = Serial.parseInt(), b = Serial.parseInt();
       led.escala[0] = constrain(r, 0, 255);
@@ -145,6 +170,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println("\n=== BANCO DEL LED — no es el firmware del marco ===");
+  identificarPlaca();
   autocomprobar();
   led.begin();
   volcarTabla();

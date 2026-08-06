@@ -16,7 +16,7 @@ static const LedRGB::Perfil TABLA[] = {
     {    0, 255,   0,     0,  true  },  // WIFI_OK         — y «foto recibida»
     {  255,   0,   0,  1000,  false },  // SD_ERROR        — ver nota abajo
     {  255,   0,   0,   150,  true  },  // UPLOAD_ERROR
-    {  255,  80,   0,   600,  true  },  // WARNING         — el 80 se recalibra en banco
+    {  255,  70,   0,   600,  true  },  // WARNING         — el 70 es MEDIDO, ver abajo
 };
 
 // El array va SIN tamaño explícito a propósito: declararlo [TOTAL] deja que un
@@ -24,6 +24,13 @@ static const LedRGB::Perfil TABLA[] = {
 // no parpadea ni se apaga se ve exactamente igual que uno que nadie disparó.
 static_assert(sizeof(TABLA) / sizeof(*TABLA) == (size_t)LedRGB::State::TOTAL,
               "falta (o sobra) una fila en TABLA para algún State");
+
+// El 70 del ámbar es el único número de la tabla que salió de mirar el LED, no de
+// elegirlo: barrido con la tecla 'c' del banco sobre el hardware real. Y depende
+// del hardware — vale para 220 Ω en el rojo y 470 Ω en el verde. Si esas
+// resistencias cambian, este número deja de valer y se vuelve a barrer. El 80
+// original tiraba a verde, que es el peor fallo posible en esta fila: ámbar es
+// «subiendo» y rojo es «falló», y tienen que distinguirse de un vistazo.
 
 // ponytail: SD_ERROR es el único estado que no se apaga, y es una excepción con
 // fecha de caducidad. Hoy el display no existe y el LED es el único canal para

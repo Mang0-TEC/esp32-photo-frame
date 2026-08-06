@@ -157,10 +157,10 @@ node web/test/correr.js
 
 `main.cpp` ya tiene lógica real, no es un stub vacío:
 
-- **Corre:** provisioning con WiFiManager (`autoConnect()`, sin verificar en
-  hardware — ver el pendiente #5), máquina de estados del LED, gesto corto/largo
-  del touch capacitivo, brillo automático por BH1750, y las rutas `/list` y
-  `/photo` del servidor.
+- **Corre:** provisioning con WiFiManager (`autoConnect()`, **verificado en placa
+  el 6-ago-2026** de extremo a extremo, con el portal en español), máquina de
+  estados del LED, gesto corto/largo del touch capacitivo, brillo automático por
+  BH1750, y las rutas `/list` y `/photo` del servidor.
 - **Cuerpo vacío, con `TODO`:** `showNextPhoto()`, `drawSetupQR()`,
   `drawUsageQR()` — sin decodificación JPEG ni generación de QR todavía, aunque
   `TFT_eSPI`, `TJpg_Decoder` y `QRCode` ya están enlazados.
@@ -180,15 +180,24 @@ node web/test/correr.js
 
 **Con los componentes en mano**, y en este orden:
 
-1. **Provisioning WiFi de extremo a extremo.** Va primero porque es lo único que
-   puede forzar un cambio de plataforma: `WiFiManager@2.0.17` sobre
-   arduino-esp32 3.3.x es la combinación del issue #1797. Hay tres planes B.
+1. ~~**Provisioning WiFi de extremo a extremo.**~~ **Hecho, 6-ago-2026.** Iba
+   primero por ser lo único capaz de forzar un cambio de plataforma, y no lo
+   fuerza: el panic del issue #1797 no ocurre con `WiFiManager@2.0.17` sobre
+   arduino-esp32 3.3.11. Virgen → AP → portal → guardar → reinicio y reconecta
+   solo. Los tres planes B quedan sin usar. Lo que sí salió roto fue otra cosa:
+   `getWiFiIsSaved()` devuelve «sí» sobre una placa sin credenciales si se
+   pregunta antes de `WiFi.mode(WIFI_STA)` — un arranque virgen se habría quedado
+   sin QR de setup, que es la regla 1. Corregido.
 2. Prueba de tres pasos del pin `BL` del display, pinout del PN2222A, velocidad
-   SPI estable (27 → 40 → 80 MHz) y dirección I2C del BH1750.
+   SPI estable (27 → 40 → 80 MHz) y dirección I2C del BH1750. **Ya no están
+   bloqueados por hardware**: los tres componentes están en mano.
 3. Firmware del marco: manifiesto con reconstrucción, decodificación por bloques,
-   brillo por BH1750, toque capacitivo y QR.
+   brillo por BH1750, toque capacitivo y QR — **incluido el QR de uso diario
+   saliendo solo al terminar el provisioning**, porque el toque largo que lo
+   muestra hoy es un gesto que nadie va a explicarle a quien reciba el marco.
 4. **Galería de lo ya cargado y `POST /delete`** — la única ruta del contrato que
-   la página todavía no llama.
+   la página todavía no llama. Muestra **todas** las fotos de la tarjeta y deja
+   quitar cualquiera. El objetivo es curación, no espacio: caben ~121,000 fotos.
 5. Integración y modelado de la carcasa.
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no

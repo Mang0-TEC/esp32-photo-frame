@@ -14,12 +14,13 @@
 #include <WiFiManager.h>
 #include <ESPAsyncWebServer.h>
 #include <qrcode.h>
+#include <esp_heap_caps.h>
 #include "LedRGB.h"
 
 // ============================================================================
 // Pines (BOM-marco-fotos-esp32.md, Mapa de GPIOs)
 // ============================================================================
-constexpr uint8_t PIN_LED_R = 25;   // Rojo, 1 kΩ
+constexpr uint8_t PIN_LED_R = 25;   // Rojo, 220 Ω (era 1 kΩ; ver el BOM)
 constexpr uint8_t PIN_LED_G = 33;   // Verde, 470 Ω
 constexpr uint8_t PIN_LED_B = 4;    // Azul, 470 Ω
 constexpr uint8_t PIN_BL    = 19;   // Backlight display (PWM LEDC)
@@ -129,6 +130,25 @@ static void setBacklight(uint8_t value) {
     ledcWrite(PIN_BL, value);
 }
 
+// ============================================================================
+// Heap — pendiente #5, ETAPA 2
+//
+// Este archivo ES la etapa 2 de la prueba de provisioning: para cuando llega a
+// autoConnect() ya están construidos los cinco globales y ya corrieron
+// tft.begin(), SD.begin() y lux.begin(). La etapa 1 —WiFiManager y LedRGB, nada
+// más— vive en firmware/banco/, env:wifi.
+//
+// El confusor #1 de §5 es el heap libre en este punto: WiFiManager levanta su
+// propio WebServer síncrono más un DNSServer encima de todo eso. Si panica aquí
+// y no en la etapa 1, la causa es la presión de heap y no la librería, y el plan
+// B es distinto. Estas dos cifras son lo que separa las dos hipótesis, así que
+// el printf es palabra por palabra el del banco: si no, no se pueden comparar.
+// ============================================================================
+static void medir(const char* etiqueta) {
+    Serial.printf("[%s] heap=%u mayorBloque=%u minHist=%u\n", etiqueta, ESP.getFreeHeap(),
+                  heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), ESP.getMinFreeHeap());
+}
+
 // Termina un fade del LED sin depender de loop(). Hace falta justo antes de
 // autoConnect(), que bloquea durante segundos —o minutos con el portal abierto—
 // y deja el LED congelado en el último valor escrito: sin esto, el frame que se
@@ -150,6 +170,11 @@ void setup() {
 
     led.begin();
     led.setState(LedRGB::State::BOOT);
+    // Mismo punto que en el banco: LED ya arrancado, periféricos todavía no. La
+    // diferencia contra etapa1-arranque es lo que cuestan los globales de más
+    // (.bss); la de preAutoConnect añade lo que cuestan sus begin(). Con las dos
+    // cifras el confusor #1 se descompone en vez de quedar en un solo delta.
+    medir("etapa2-arranque");
 
     hspi.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
     Wire.begin(21, 22);            // SDA, SCL
@@ -173,6 +198,35 @@ void setup() {
     // --- WiFiManager: provisioning ---
     WiFiManager wm;
 
+    // Portal en español y de una sola página. Las cadenas vienen de
+    // wm_strings_marco.h por el flag WM_STRINGS_FILE, nunca editando la
+    // librería. DUPLICADA en firmware/banco/src/wifi.cpp, que es donde se
+    // prueba: si divergen, el banco deja de probar este portal. El porqué de
+    // quitar info/update/erase está escrito allá y en §5.
+    wm.setTitle("Marco de fotos");
+    {
+        const char* menuPortal[] = {"wifi"};
+        wm.setMenu(menuPortal, 1);
+    }
+
+    // getWiFiIsSaved() MIENTE si el driver de WiFi no ha arrancado, y esta línea
+    // es lo que lo arregla. Medido en el banco (env:wifi, 6-ago-2026), placa
+    // virgen: sin ella devuelve «sí» y con ella «no», que es la verdad.
+    //
+    // El mecanismo: getWiFiIsSaved() → WiFi_hasAutoConnect() → WiFi_SSID(true) →
+    // esp_wifi_get_config(WIFI_IF_STA,&conf). Esa última devuelve
+    // ESP_ERR_WIFI_NOT_INIT y NO TOCA conf si el driver no arrancó; WiFiManager
+    // ignora el código de retorno y arma el String con la pila sin inicializar.
+    // Medido: ESP_ERR_WIFI_NOT_INIT antes, ESP_OK con ssid vacío después.
+    //
+    // Lo que costaba es exactamente la regla 1: con un «sí» falso se pinta la
+    // pantalla de «conectando» en vez del QR de setup, y quien recibe el marco se
+    // queda sin nada que escanear. Y como depende de la pila, pasaría en el banco
+    // y fallaría en la sala. No sirve fiarse de autoConnect() para esto: tiene su
+    // propia llamada COMENTADA y un `wifiIsSaved = true` a pelo (WiFiManager.cpp
+    // 2.0.17, línea 283), así que él acierta por otro camino y nosotros no.
+    WiFi.mode(WIFI_STA);
+
     // autoConnect() intenta primero las credenciales guardadas y solo levanta el
     // AP si eso falla, así que hay que preguntar ANTES: pintar el QR de setup
     // incondicionalmente lo mostraría unos segundos en cada arranque normal.
@@ -184,7 +238,11 @@ void setup() {
     }
     asentarLed(400);
 
-    if (wm.autoConnect("Marco-Fotos", "fotos1234")) {
+    medir("etapa2-preAutoConnect");
+    const bool wifiOk = wm.autoConnect("Marco-Fotos", "fotos1234");
+    medir("etapa2-postAutoConnect");
+
+    if (wifiOk) {
         Serial.print("[OK] WiFi conectado, IP = ");
         Serial.println(WiFi.localIP());
         // Verde, y el auto-off de su propia fila lo apaga a los 30 s. No se pisa

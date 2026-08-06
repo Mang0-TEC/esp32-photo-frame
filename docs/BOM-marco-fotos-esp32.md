@@ -115,7 +115,7 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 | Azul (470 Ω) | pin 1 | 4 |
 | Verde (470 Ω) | pin 2 | 33 |
 | Común | pin 3 | GND |
-| Rojo (1 kΩ) | pin 4 | 25 |
+| Rojo (220 Ω) | pin 4 | 25 |
 | **Touch capacitivo** | | |
 | Pad (T9) | — | 32 |
 
@@ -285,7 +285,7 @@ PlatformIO además fija versiones exactas en un archivo versionado, que es lo qu
 
 La plataforma oficial `platformio/platform-espressif32` quedó estancada en arduino-esp32 2.x — su issue #1225 ("Support Arduino ESP32 v3.0") sigue abierto desde noviembre de 2023. El fork comunitario **pioarduino** es el que da arduino-esp32 3.x, y está activo (commits de julio 2026, actualmente Arduino 3.3.11 / IDF 5.5.5).
 
-Ambas rutas son válidas para el ESP32 clásico. Se elige pioarduino por estar mantenida; la oficial 6.x queda como plan B si aparece incompatibilidad (ver pendiente #5).
+Ambas rutas son válidas para el ESP32 clásico. Se elige pioarduino por estar mantenida; la oficial 6.x era el plan B por si WiFiManager resultaba incompatible, y **ese plan B ya no hace falta**: el pendiente #5 se cerró el 6-ago-2026 con el provisioning verificado en placa sobre pioarduino `55.03.311`.
 
 ### `platformio.ini`
 
@@ -343,7 +343,7 @@ build_flags =
 |---|---|
 | `ESP32Async/ESPAsyncWebServer` | **No usar `me-no-dev/ESPAsyncWebServer`: archivado el 20-ene-2025, solo lectura.** El fork ESP32Async incluye los fixes de concurrencia de `yubox-node-org`, que es precisamente donde vivían los bugs de upload multipart. Va en 3.x; anuncian una 4.x que dropea ESP8266 e IDF 4.x → **fijar la versión** |
 | `ESP32Async/AsyncTCP` | Dependencia obligatoria del anterior. Debe venir del mismo fork, no mezclar con la de me-no-dev. **Su hilo `async_tcp` corre a prioridad 10 con 16384 B de stack** (`CONFIG_ASYNC_TCP_STACK_SIZE`, `8192*2`) — ver la trampa de abajo |
-| `tzapu/WiFiManager` | Ver pendiente #5. Riesgo abierto con arduino-esp32 ≥3.1.0 |
+| `tzapu/WiFiManager` | **Riesgo cerrado 6-ago-2026**: el panic del issue #1797 no ocurre, provisioning verificado de extremo a extremo. Dos cosas que sí salieron de ahí: `getWiFiIsSaved()` miente si se llama antes de `WiFi.mode(WIFI_STA)`, y el portal se tradujo al español con `WM_STRINGS_FILE` porque el `wm_strings_es.h` de la librería está sin traducir — pendiente #5 |
 | `bodmer/TJpg_Decoder` | **No confundir con `JPEGDecoder`**, el anterior del mismo autor. El ejemplo oficial `ESP32_SDcard_jpeg` usa el viejo; la API es distinta |
 
 Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar la forma con URL de git y tag:
@@ -361,22 +361,34 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@3.12.0` y `AsyncTCP@3.5.0`. **Al actualizar cualquiera de las tres aquí, sincronizar allá.** Si divergen, el banco deja de probar lo que el firmware va a correr — que es el único motivo de que ese mock esté en el ESP32 y no en Python. El archivo del banco lleva el aviso en su encabezado, pero eso se lee estando ya dentro; el desfase se produce editando **este** lado.
 
-#### `firmware/banco/` tiene dos envs, y solo uno usa GPIOs
+#### `firmware/banco/` tiene tres envs, uno por cosa que se mide
 
 | env | Qué prueba | GPIOs | `lib_deps` |
 |---|---|---|---|
 | `mock` | El contrato HTTP de §4, sin SD y sin display | ninguno | las dos async, duplicadas a mano |
 | `led` | `LedRGB` contra el LED real | 25, 33, 4 | ninguna |
+| `wifi` | El provisioning de WiFiManager — pendiente #5, **etapa 1** | 25, 33, 4 (el LED) | `WiFiManager`, duplicada a mano |
 
 `default_envs = mock`, así que `pio run` a secas sigue compilando solo el banco de
-red; el del LED se pide con `-e led`. Cada uno lleva su `build_src_filter` — sin
-eso los dos `setup()` acaban en el mismo binario.
+red; los otros dos se piden con `-e led` y `-e wifi`. Cada uno lleva su
+`build_src_filter` — sin eso los tres `setup()` acaban en el mismo binario.
 
-**`env:led` compila `firmware/src/LedRGB.cpp` en su sitio, sin copiarlo**
-(`build_src_filter = +<led.cpp> +<../../src/LedRGB.cpp>`). El banco tiene que
-probar el mismo archivo que va a correr en el marco. Y como no usa ninguna
-librería, la advertencia de sincronización manual de arriba **no le aplica**: no
-duplica ninguna versión.
+**`env:led` y `env:wifi` compilan `firmware/src/LedRGB.cpp` en su sitio, sin
+copiarlo** (`+<../../src/LedRGB.cpp>` en los dos). El banco tiene que probar el
+mismo archivo que va a correr en el marco. La advertencia de sincronización manual
+de arriba **no le aplica a `env:led`** —no usa ninguna librería— pero **sí a
+`env:wifi`**, que duplica `WiFiManager@2.0.17`.
+
+> **Los dos objetos de `LedRGB.cpp` comparten ruta, y eso ya se midió.** El `..`
+> del filtro deja el objeto en `.pio/build/src/LedRGB.cpp.o`, un nivel ARRIBA del
+> directorio de cada env. Como SCons firma por contenido **y flags**, y los de los
+> dos envs difieren, alternar entre `-e led` y `-e wifi` **recompila** ese archivo
+> — verificado, sale `Compiling .pio/build/src/LedRGB.cpp.o` al cambiar. Es un
+> recompilado de un segundo, no un objeto viejo colándose.
+
+**`env:wifi` también trae el portal en español** (`-D WM_STRINGS_FILE`), porque
+tiene que probar el portal que corre en el marco y no otro. Ver la sección del
+pendiente #5.
 
 Lo que responde, y que no se puede decidir desde el escritorio: el pinout medido
 del LED, la corriente real por canal (ver la nota de las resistencias, arriba), si
@@ -518,24 +530,88 @@ El rango cubre desde cuarto casi a oscuras hasta luz de día directa — exactam
 | 2 | Pinout emisor/colector del PN2222A | Zócalo hFE, o prueba empírica del backlight |
 | 3 | Velocidad SPI máxima estable | Empírico: 27 → 40 → 80 MHz |
 | 4 | Dirección I2C del BH1750 | Escaneo I2C; casi seguro `0x23` |
-| 5 | **WiFiManager con arduino-esp32 ≥3.1.0** | Ver abajo. Prueba de provisioning de extremo a extremo |
+| 5 | ~~WiFiManager con arduino-esp32 ≥3.1.0~~ | **CERRADO 6-ago-2026.** No panica. Ver abajo |
 
-Los primeros cuatro no bloquean el desarrollo del firmware — son constantes que se ajustan al final. El quinto sí puede obligar a bajar de plataforma.
+Los cuatro que quedan no bloquean el desarrollo del firmware — son constantes que se ajustan al final. Ya no hay ningún pendiente capaz de forzar un cambio de plataforma.
 
-### Pendiente #5 — riesgo abierto de WiFiManager
+### Pendiente #5 — CERRADO, 2026-08-06. El panic no ocurre
 
-[Issue #1797 de tzapu/WiFiManager](https://github.com/tzapu/WiFiManager/issues/1797): con arduino-esp32 3.1.0 o posterior, `wm.startConfigPortal()` provoca `Guru Meditation Error: Core 1 panic'ed` y reinicia el equipo. Con 3.0.7 o anterior funciona.
+[Issue #1797 de tzapu/WiFiManager](https://github.com/tzapu/WiFiManager/issues/1797) reportaba que con arduino-esp32 ≥3.1.0 el portal provoca `Guru Meditation Error: Core 1 panic'ed`. **Verificado en placa que no ocurre en esta combinación**, con el provisioning completo de extremo a extremo:
 
-**No verificado.** El issue es de febrero de 2025 y la librería tuvo actualización en febrero de 2026, así que probablemente ya está corregido. Dos matices que reducen el riesgo:
+borrar credenciales → arrancar virgen → AP `Marco-Fotos` → portal cautivo → elegir red y guardar → conecta → **reiniciar y reconectar solo, sin levantar el AP**.
 
-- El flujo de este proyecto usa `autoConnect()` (arranque sin credenciales), no `startConfigPortal()` explícito. Puede que ni aplique.
-- pioarduino stable trae arduino-esp32 3.3.x, muy por encima de la versión del reporte.
+Versiones exactas probadas: `WiFiManager@2.0.17`, plataforma pioarduino `55.03.311` (arduino-esp32 3.3.11 / IDF 5.5.5), `ESP32-D0WD-V3 rev v3.1`, 4 MB de flash. Los tres planes B (`#master`, bajar a `espressif32` 6.x, portal a mano sobre `ESPAsyncWebServer` + `DNSServer`) quedan sin usar.
 
-**Cómo se resuelve:** probar el provisioning completo (borrar NVS → arrancar → AP `Marco-Fotos` → portal → guardar credenciales → reconectar) **antes** de integrar nada más. Si truena, hay dos salidas: bajar a la plataforma oficial `espressif32` 6.x (arduino-esp32 2.0.17), o escribir el portal cautivo a mano sobre `ESPAsyncWebServer` + `DNSServer`, que ya están en el proyecto.
+#### La prueba se partió en dos etapas, y por qué
 
-**Si truena, confusores plausibles en orden — antes de sospechar de WiFiManager mismo:**
-1. **Heap libre en el momento de `autoConnect()`.** Para ese punto ya corrieron `tft.begin()` y `SD.begin()`, y ya están construidos los globales `tft`, `hspi`, `lux`, `server` (`AsyncWebServer`, instanciado aunque no arrancado) y `led`. WiFiManager levanta su propio WebServer síncrono más un `DNSServer` encima de eso — es la vecindad más parecida a un panic por asignación fallida.
-2. **Orden de inicialización — verificado que NO aplica**, leyendo `setup()`: `server.begin()` del `AsyncWebServer` corre después de que `autoConnect()` retorna, no antes ni en paralelo. No hay dos servidores compitiendo por el puerto 80 durante el portal.
-3. **El fade del LED antes de `autoConnect()`** (`asentarLed()` en `main.cpp`) — es el último código que corre antes del punto de falla, útil como landmark para bisecar, pero no un sospechoso: `delay()` en arduino-esp32 es `vTaskDelay`, cede CPU y no corrompe memoria. Detalle en §9 de la especificación funcional.
+Para no confundir «es la librería» con «es la presión de heap» —el confusor #1— cada etapa mide con el mismo `printf`:
 
-Es la única dependencia que puede forzar un cambio de plataforma. Por eso se prueba primero.
+| Etapa | Qué corre | Dónde |
+|---|---|---|
+| 1 | WiFiManager + `LedRGB`, nada más | `firmware/banco/`, `[env:wifi]` |
+| 2 | La vecindad real de `setup()`: los cinco globales, con `tft.begin()`, `SD.begin()` y `lux.begin()` ya corridos | `firmware/`, `[env:marco]` — el firmware de verdad, no una copia |
+
+Heap libre en bytes, placa con credenciales guardadas en las dos:
+
+| Punto de medida | Etapa 1 | Etapa 2 | Δ |
+|---|---|---|---|
+| Arranque (solo el LED) | 282,184 | 268,540 | −13,644 |
+| Justo antes de `autoConnect()` | 230,988 | 214,760 | −16,228 |
+| Justo después | 229,848 | 213,608 | −16,240 |
+
+**Confusor #1 descartado con números.** Los cuatro globales de más cuestan 13,644 B de `.bss`, y sus `begin()` solo 2,584 B encima. Con el portal realmente abierto (etapa 1, placa virgen, 9 redes escaneadas) el mínimo histórico tocó **189,108 B libres** — o sea que el portal cuesta unos 42 KB de suelo transitorio sobre un margen de más de 200 KB.
+
+**Y `mayorBloque` se quedó en 110,580 B en las seis mediciones de las dos etapas**, sin moverse un byte. No hay fragmentación. Contrasta con el banco de red, donde el mismo indicador cae de 34,804 a 16,372 B tras levantar WiFi porque AsyncTCP pide memoria por conexión — aquí no hay nada de eso.
+
+> **Un matiz que no se midió:** la etapa 2 corrió con credenciales ya guardadas, así que **no ejerció el portal**, solo la reconexión. Que el portal aguante bajo la presión de heap de la etapa 2 se infiere de restar los 42 KB medidos en la etapa 1 (quedarían ~172 KB), no está medido. Se cierra igualmente porque el margen es de un orden de magnitud; para medirlo habría que borrar credenciales con `env:wifi` (tecla `z`), flashear `env:marco` sin borrar la NVS y volver a provisionar desde el celular.
+>
+> Los otros dos confusores siguen como estaban: el **orden de inicialización** no aplica (`server.begin()` corre después de que `autoConnect()` retorna), y `asentarLed()` es landmark de bisección, no sospechoso (`delay()` es `vTaskDelay`).
+
+#### Lo que sí salió roto: `getWiFiIsSaved()` miente antes de arrancar el driver
+
+No es el panic, y para este proyecto es peor, porque golpea la regla 1 y **solo en el arranque que importa**.
+
+Sobre una placa sin credenciales, `wm.getWiFiIsSaved()` devuelve **«sí»**. Medido con el código de retorno, no deducido:
+
+```
+ANTES de WiFi.mode(STA): esp_wifi_get_config=ESP_ERR_WIFI_NOT_INIT           → guardadas=sí
+TRAS  WiFi.mode(STA):    esp_wifi_get_config=ESP_OK  ssid=""                 → guardadas=no
+```
+
+El mecanismo: `getWiFiIsSaved()` → `WiFi_hasAutoConnect()` → `WiFi_SSID(true)` → `esp_wifi_get_config(WIFI_IF_STA,&conf)`. Esa última devuelve `ESP_ERR_WIFI_NOT_INIT` y **no toca `conf`** si el driver no ha arrancado; WiFiManager ignora el código de retorno y construye el `String` con pila sin inicializar.
+
+**La corrección es una línea: `WiFi.mode(WIFI_STA)` antes de preguntar**, ya puesta en `main.cpp` y en el banco.
+
+- **No sirve fiarse de que `autoConnect()` acierta.** Acierta por otro camino: tiene su propia llamada a `getWiFiIsSaved()` **comentada** y un `wifiIsSaved = true` a pelo (`WiFiManager.cpp` 2.0.17, línea 283). El síntoma en el log era esa contradicción — nuestro «sí» seguido de su `No wifi saved, skipping`.
+- **Por qué habría pasado todas las pruebas de banco:** con credenciales guardadas las dos lecturas coinciden en «sí». El fallo **solo existe en el primer arranque de una placa virgen**, que es exactamente el único arranque en el que alguien provisiona el regalo. Sin la corrección se pinta la pantalla de «conectando» en vez del QR de setup, y quien recibe el marco se queda sin nada que escanear.
+
+#### El portal se tradujo al español, y el archivo `es` de la librería NO sirvió
+
+`wm_strings_es.h` **viene en la librería pero no está traducido**: contenido idéntico al inglés salvo mayúsculas (`"Credentials Saved"` contra `"Credentials saved"`), encabezado «SAMPLE SAMPLE SAMPLE», versión 0.0.0. Comprobado cadena por cadena, no supuesto. **Activarlo no cambia nada — no volver a intentarlo.**
+
+Las cadenas propias viven en **`firmware/src/wm_strings_marco.h`** y se enchufan con un build flag, que es el patrón que este proyecto ya exige para TFT_eSPI — **nunca editar la librería**, porque se pierde al actualizar y al clonar:
+
+```ini
+build_flags = -D WM_STRINGS_FILE='"wm_strings_marco.h"' -I src
+```
+
+`WiFiManager.h` hace `#include WM_STRINGS_FILE` (línea 141) con `wm_strings_en.h` por defecto. Va en los dos `.ini` —el del marco y el del banco, allá con `-I../src`— y el archivo propio incluye `wm_consts_en.h`, que trae rutas y tokens y **se queda en inglés a propósito**: son URLs, no texto visible.
+
+**Como el `#include` es obligatorio, no existe la caída silenciosa al inglés:** si el archivo no se encuentra, el build falla. Y al actualizar WiFiManager, un símbolo nuevo rompe la compilación con «undeclared identifier» en vez de dejar un texto en inglés sin que nadie se entere.
+
+**Verificado en el binario, no solo compilado:** `strings firmware.elf` encuentra `Conectar a tu WiFi`, `Guardar` y `Buscar otra vez`, y **no** encuentra `Configure WiFi`, `Show Password`, `Saving Credentials` ni `Available pages`. El inglés del portal no se enlaza.
+
+##### El portal es de una sola página, y las que se quitan no son pérdida
+
+`wm.setMenu({"wifi"})`. Eso baja la traducción de 101 símbolos a unos 15 —la mayoría del archivo es HTML, CSS y JS, que no se toca— y de paso responde a si convenía conservar la funcionalidad extra de la librería:
+
+| Página | Por qué se quita |
+|---|---|
+| `update` | **No puede funcionar.** `huge_app.csv` tiene una sola partición de app (`app0`, sin `ota_1`), así que `Update.begin()` falla. Botón muerto por construcción |
+| `erase` | Redundante y destructiva. Si cambian el módem, `autoConnect()` falla al arrancar y el portal vuelve a salir solo, más el toque largo de §8. Un botón que borra la configuración dentro de un regalo solo puede restar |
+| `info` | ~40 filas de diagnóstico (chip id, heap, IDF, MAC): justo lo que la regla 3 prohíbe. Lo único útil de ahí —la IP— ya lo da el QR de uso diario con la IP en texto debajo |
+| `restart` / `exit` / `close` | Tras guardar, WiFiManager cierra el portal por su cuenta |
+
+Consecuencia: `/info` y `/update` **se quedan en inglés a propósito**, porque no hay enlace que lleve ahí. Y hay cadenas que **nunca** se traducen porque son protocolo y no texto: `S_debugPrefix` (el prefijo `*wm:` con el que se buscan los mensajes en el monitor serie), `S_GET`/`S_POST`, `S_options` y `S_parampre`.
+
+Coste en flash: **−444 B**. Traducir no costó nada y vaciar `HTTP_HELP` —una tabla con la lista de rutas del portal, en inglés— devolvió más de lo que ocuparon los acentos.

@@ -459,11 +459,22 @@ Se acepta tal cual. Arreglarlo obligaría a resubir la tanda entera por una foto
 
 **La base del servidor es `""` — mismo origen — y ese es el valor de producción.** La compuerta que decide si los botones de subir existen se compara **contra `null`, jamás por veracidad**: `""` es *falsy*, y un `if (base)` apagaría los botones justo en el marco, que es el único sitio donde tienen que estar. Abierta a mano desde el disco (`file://`) la página se cae sola a `null`, o sea al modo mock donde «Guardar JPEG» es la acción; y bajo diagnóstico se puede apuntar a otra máquina por el **fragmento** de la URL, que no viaja al servidor.
 
-#### Pendiente: borrar y gestionar lo ya cargado
+#### Pendiente: la galería de lo ya cargado, y borrar
 
-`POST /delete` está en el contrato y **todavía no lo llama nadie**. Quitar de la tanda una foto ya subida la saca de esta pantalla pero no del marco, y el texto de la confirmación lo dice. Borrar de verdad llega con la galería de lo ya cargado, cuando haya tarjeta.
+`POST /delete` está en el contrato y **todavía no lo llama nadie**. Quitar de la tanda una foto ya subida la saca de esta pantalla pero no del marco, y el texto de la confirmación lo dice. Borrar de verdad llega con la galería, cuando estén todos los componentes integrados y probados.
 
-Hay un hallazgo medido en placa que no se puede perder mientras tanto: **el cuerpo de `/delete` debe ir con `Content-Type: application/json`**. Con `x-www-form-urlencoded`, `AsyncWebServer` parsea el cuerpo como formulario, el callback de cuerpo nunca lo ve, y el servidor contesta `200` sobre un borrado que no ocurrió.
+**Qué tiene que hacer la galería**, que hoy la página no puede: mostrar **todas** las fotos que ya están en la tarjeta —no solo la tanda en curso— y dejar quitar cualquiera de ellas.
+
+**No hace falta inventar contrato: ya está entero.** `/list` devuelve el manifiesto crudo por streaming, `/photo?n=` sirve cada archivo, y no hay miniaturas que generar porque las fotos pesan 32 KB (arriba, en esta misma sección). La galería es una pantalla nueva en `web/index.html`, no endpoints nuevos.
+
+> **El motivo NO es el espacio, y conviene tenerlo claro antes de diseñarla.** §3 mide ~121,000 fotos de capacidad al peso medio real: nadie va a llenar la tarjeta, y un medidor de espacio libre sería un número técnico en pantalla sin ninguna acción detrás — regla 3. Lo que la galería resuelve es **curación**: quitar la foto que salió movida, la que ya no viene a cuento, o las diez de aquel viaje. Diseñarla como «gestión de espacio» llevaría a construir lo que no sirve y a no construir lo que sí.
+
+**Dos trampas del borrado que ya se pueden anotar**, porque salen de decisiones cerradas en §3:
+
+- **Borrar tiene que reescribir `/manifest.txt`, y el contador de NVS NO retrocede.** Reutilizar el número de una foto borrada daría colisiones con lo que siga en el manifiesto. El hueco en la numeración es correcto y no hay que taparlo.
+- **Un borrado a medias no puede dejar el marco en negro.** Si el archivo desaparece pero el manifiesto sigue nombrándolo, el fallback de §3 recorre `/fotos/` y lo reconstruye. Eso ya está especificado; lo que hay que respetar es el orden — borrar el archivo y reescribir el índice, nunca al revés.
+
+Y hay un hallazgo medido en placa que no se puede perder mientras tanto: **el cuerpo de `/delete` debe ir con `Content-Type: application/json`**. Con `x-www-form-urlencoded`, `AsyncWebServer` parsea el cuerpo como formulario, el callback de cuerpo nunca lo ve, y el servidor contesta `200` sobre un borrado que no ocurrió.
 
 ### Dónde vive la página
 
@@ -496,12 +507,27 @@ Versiones y sintaxis exacta de `lib_deps` en el BOM.
 
 Como el marco vivirá en casa ajena, **no se pueden dejar credenciales en el firmware**.
 
-> **Riesgo abierto:** el issue #1797 de WiFiManager reporta un `Guru Meditation Error` al levantar el portal con arduino-esp32 ≥3.1.0. Probablemente ya corregido, pero **no verificado**. Es la única dependencia capaz de forzar un cambio de plataforma, así que el provisioning se prueba de extremo a extremo antes de integrar nada más. Detalle y planes B en el pendiente #5 del BOM.
+> **Riesgo CERRADO, 6-ago-2026.** El `Guru Meditation Error` del issue #1797 **no ocurre** con `WiFiManager@2.0.17` sobre pioarduino `55.03.311` (arduino-esp32 3.3.11). Provisioning verificado de extremo a extremo en placa: virgen → AP `Marco-Fotos` → portal → guardar → conecta → **reinicio y reconecta solo, sin AP**. El confusor #1 queda descartado con números: `mayorBloque` no se movió de 110,580 B en ninguna de las seis mediciones, y con el portal abierto el mínimo de heap libre fue de 189,108 B. Cifras completas y el matiz de lo que no se midió, en el pendiente #5 del BOM. Los tres planes B quedan sin usar.
 
-> **Confusores conocidos, en orden de plausibilidad, si aparece el panic:**
-> 1. **Heap libre en el momento de `autoConnect()`.** Para ese punto ya corrieron `tft.begin()` y `SD.begin()`, y ya están construidos los globales `tft`, `hspi`, `lux`, `server` (el `AsyncWebServer`, instanciado aunque no arrancado) y `led`. WiFiManager levanta su propio WebServer síncrono más un `DNSServer` encima de eso — es la vecindad más parecida a un panic por asignación fallida.
-> 2. **Orden de inicialización — verificado que NO aplica.** `server.begin()` del `AsyncWebServer` se llama después de que `autoConnect()` retorna, no antes ni en paralelo: no hay dos servidores compitiendo por el puerto 80 durante el portal.
-> 3. **El fade del LED antes de `autoConnect()`** (`asentarLed()`, ver §9) — es el último código que corre antes del punto de falla, útil como referencia para bisecar, pero no un sospechoso: `delay()` en arduino-esp32 es `vTaskDelay`, cede CPU al scheduler y no corrompe memoria.
+#### `getWiFiIsSaved()` no se llama nunca sin arrancar antes el driver
+
+Lo que salió roto en esa prueba no fue el panic. Sobre una placa **sin** credenciales, `wm.getWiFiIsSaved()` devuelve «sí»: acaba en `esp_wifi_get_config(WIFI_IF_STA,&conf)`, que devuelve `ESP_ERR_WIFI_NOT_INIT` y **deja `conf` sin tocar** si el driver no arrancó, y WiFiManager ignora ese código y arma el `String` con pila sin inicializar. Medido: `ESP_ERR_WIFI_NOT_INIT` → «sí»; tras `WiFi.mode(WIFI_STA)`, `ESP_OK` con ssid vacío → «no».
+
+**Por eso `setup()` llama a `WiFi.mode(WIFI_STA)` antes de preguntar.** Es una línea, y sin ella la tabla de más abajo —la que decide entre el QR de setup y la pantalla de «conectando»— se resuelve al revés justo en el primer arranque: quien recibe el marco ve «conectando» y no tiene nada que escanear. **Es la regla 1 entera.**
+
+Y es del tipo que no se descubre probando: con credenciales guardadas las dos lecturas coinciden en «sí», así que el fallo **solo existe en el arranque virgen**, que es el único en el que alguien provisiona el regalo. Tampoco vale fiarse de que `autoConnect()` acierte — acierta por otro camino, con su propia llamada comentada y un `wifiIsSaved = true` a pelo (`WiFiManager.cpp` 2.0.17, línea 283).
+
+#### El portal va en español y de una sola página
+
+Es la única pantalla que quien recibe el marco **tiene** que atravesar para que el regalo funcione, así que dejarla en inglés era la regla 1 a medias.
+
+**El `wm_strings_es.h` que trae la librería no sirve: está sin traducir** — contenido idéntico al inglés, encabezado «SAMPLE», versión 0.0.0, comprobado cadena por cadena. Las cadenas propias viven en `firmware/src/wm_strings_marco.h` y entran por el build flag `WM_STRINGS_FILE`, **nunca editando la librería**, igual que `USER_SETUP_LOADED` con TFT_eSPI. Detalle y verificación en el BOM.
+
+Se traduce lo que se ve en el camino real —raíz → «Conectar a tu WiFi» → lista de redes → contraseña → «Guardar»— más los mensajes de estado, que es donde alguien se atora: «La contraseña no es correcta» tiene que distinguirse de «No se encontró esa red». Y se dice **«Red»** y no «SSID»: nadie tiene por qué saber qué es eso.
+
+**`wm.setMenu({"wifi"})` deja una sola página**, y las que se quitan no eran funcionalidad que valiera la pena conservar: `update` **no puede funcionar** (`huge_app.csv` tiene una sola partición de app, sin `ota_1`, así que `Update.begin()` falla), `erase` es redundante con que el portal vuelva a salir solo cuando cambia el módem —y destructiva a un toque—, e `info` son ~40 filas de diagnóstico, que es exactamente lo que la regla 3 prohíbe. Lo único útil de `info`, la IP, ya lo da el QR de uso diario.
+
+> **Los otros dos confusores del panic siguen documentados por si algún día reaparece:** el **orden de inicialización** no aplica —`server.begin()` del `AsyncWebServer` corre después de que `autoConnect()` retorna, no en paralelo—, y el fade del LED (`asentarLed()`, §9) es landmark de bisección y no sospechoso: `delay()` en arduino-esp32 es `vTaskDelay`, cede CPU y no corrompe memoria.
 
 **Flujo de primer arranque:**
 
@@ -545,9 +571,23 @@ Dos QRs distintos para dos momentos distintos:
 | QR | Cuándo aparece | Qué codifica |
 |---|---|---|
 | **Setup** | Sin credenciales guardadas, o toque largo sin WiFi | `WIFI:S:Marco-Fotos;T:WPA;P:fotos1234;;` |
-| **Uso diario** | Toque largo con WiFi arriba | `http://192.168.1.47` (IP actual) |
+| **Uso diario** | Toque largo con WiFi arriba, **y automáticamente al terminar el provisioning** | `http://192.168.1.47` (IP actual) |
 
 El formato `WIFI:` es reconocido nativamente por Android e iOS: al escanearlo con la cámara se conectan solos. **La persona nunca ve una contraseña.**
+
+#### El QR de uso diario tiene que salir solo al terminar el provisioning
+
+**Pendiente de implementar.** El toque largo no basta y esta sección ya lo admitía dos párrafos más abajo: *«nadie le va a explicar a la persona destinataria que ese gesto existe»*. Eso está bien para una ruta de recuperación, pero no para el camino principal.
+
+El momento en que alguien acaba de meter la contraseña del WiFi es exactamente el momento en que quiere subir fotos, y ahora mismo el único puente hasta la página es teclear una IP que nadie le ha dicho — o descubrir un gesto invisible. Es la regla 1 rota justo en el último metro del arranque.
+
+**El disparador es «se acaba de provisionar», NO «se conectó».** Pintarlo en cada arranque con éxito dejaría un QR unos segundos cada vez que se enchufa el marco: se ve a proyecto y no a producto, que es el mismo argumento por el que el QR de setup no se pinta incondicionalmente.
+
+La condición sale gratis porque ya se calcula: **`getWiFiIsSaved()` era falso antes de `autoConnect()` y la conexión tuvo éxito**. O sea que hubo portal y ahora hay red.
+
+> Esa condición **solo es fiable con `WiFi.mode(WIFI_STA)` delante**. Sin esa línea `getWiFiIsSaved()` devuelve «sí» sobre una placa virgen —ver más arriba en esta misma sección—, y el QR de uso diario no saldría nunca en el único arranque que lo necesita. Es el mismo bug que se comía el QR de setup, con el segundo síntoma escondido detrás.
+
+Sin decidir todavía: cuánto se queda en pantalla. Las dos salidas razonables son un temporizador —del orden de un minuto, largo porque hay que sacar el teléfono— o dejarlo hasta que llegue la primera petición HTTP, que es la señal de que alguien ya abrió la página. La segunda es más elegante y cuesta una bandera en el servidor; se decide con el display en mano.
 
 **El QR de uso diario debe regenerarse al vuelo**, leyendo la IP actual. Los routers domésticos reasignan por DHCP, así que la IP de hoy puede no ser la de la próxima semana.
 
@@ -777,7 +817,7 @@ corrientes tan bajas, es que no. No añadir una tabla de gamma «por si acaso».
 
 `setup()` llama a `asentarLed(400)` inmediatamente antes de `wm.autoConnect()`: un bucle que corre `led.update()` y `delay(10)` durante 400 ms para que el fade del LED termine de verdad en vez de quedar congelado a medio camino mientras `autoConnect()` bloquea el hilo —a veces por minutos, si levanta el portal—. Sin esto, lo que se queda pintado en el LED durante todo ese tiempo es el frame de un fade a medias, o directamente negro.
 
-Es el **último código que corre antes del punto en el que el issue #1797 reporta el `Guru Meditation Error`** (§5), así que es el punto de referencia natural para bisecar el pendiente #5 si aparece. **No es un sospechoso en sí mismo**: `delay()` en arduino-esp32 es `vTaskDelay`, que cede CPU al scheduler de FreeRTOS y no toca memoria — no hay mecanismo por el que un `delay(10)` en bucle corrompa nada. La lista completa de confusores plausibles, con éste incluido como landmark y no como causa, está en §5.
+Era el **último código que corre antes del punto en el que el issue #1797 reportaba el `Guru Meditation Error`** (§5), o sea el landmark natural para bisecar el pendiente #5. **Ese pendiente se cerró el 6-ago-2026 sin que el panic apareciera**, así que la función se queda por lo que hace —dejar el LED en un color correcto mientras `autoConnect()` bloquea— y no por su papel de referencia. Nunca fue sospechosa: `delay()` en arduino-esp32 es `vTaskDelay`, que cede CPU al scheduler de FreeRTOS y no toca memoria.
 
 ### Los tres canales no dan el mismo brillo al mismo duty
 
@@ -874,10 +914,11 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 
 ### Requiere los componentes en mano, en este orden
 
-6. **Provisioning de extremo a extremo (pendiente #5).** Va primero porque es lo único que puede forzar un cambio de plataforma. Todo lo demás se construye encima.
+6. ~~**Provisioning de extremo a extremo (pendiente #5).**~~ **Hecho, 6-ago-2026.** Iba primero por ser lo único capaz de forzar un cambio de plataforma, y no lo fuerza: el panic del issue #1797 no ocurre. Se probó en dos etapas para separar «es la librería» de «es la presión de heap» — `firmware/banco/` `[env:wifi]` con WiFiManager y el LED a solas, y `[env:marco]` con los cinco globales ya construidos. De ahí salió el fallo real, que era otro: `getWiFiIsSaved()` mintiendo antes de `WiFi.mode(WIFI_STA)`, corregido. Cifras en el pendiente #5 del BOM.
 7. Prueba de tres pasos del pin `BL`.
 8. Confirmar pinout del PN2222A (zócalo hFE).
 9. Afinar velocidad SPI (27 → 40 → 80 MHz).
 10. Confirmar dirección I2C del BH1750.
-11. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama. Va aquí y no antes porque sin tarjeta no hay nada que gestionar: hoy quitar de la tanda una foto ya subida la saca de la pantalla y no del marco, y el texto de la confirmación lo dice. El hallazgo que no se puede perder mientras tanto está en §4 — el `Content-Type` del cuerpo.
-12. Integración y modelado de la carcasa.
+11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.
+12. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama, y el contrato ya está entero: `/list` y `/photo` bastan, no hacen falta endpoints nuevos. Va después de probar el marco completo con todos los componentes integrados. Tiene que mostrar **todas** las fotos de la tarjeta y dejar quitar cualquiera; el objetivo es **curación, no espacio** —la capacidad dejó de ser restricción en §3— y las dos trampas del borrado, más el `Content-Type` del cuerpo, están en §4.
+13. Integración y modelado de la carcasa.

@@ -23,7 +23,7 @@
 #include "LedRGB.h"
 
 // Mapa de GPIOs del BOM. Cátodo común a GND.
-constexpr uint8_t PIN_R = 25;  // 1 kΩ
+constexpr uint8_t PIN_R = 25;  // 220 Ω (era 1 kΩ; se bajó tras verse apagado)
 constexpr uint8_t PIN_G = 33;  // 470 Ω
 constexpr uint8_t PIN_B = 4;   // 470 Ω
 
@@ -118,7 +118,7 @@ static uint32_t espera;  // arranque de la prueba de auto-off; 0 = inactiva
 static void tecla(char c) {
   espera = 0;
   switch (c) {
-    case 'r': led.setRaw(255, 0, 0);     Serial.println("[raw] ROJO   (GPIO25, 1 kΩ)"); break;
+    case 'r': led.setRaw(255, 0, 0);     Serial.println("[raw] ROJO   (GPIO25, 220 Ω)"); break;
     case 'g': led.setRaw(0, 255, 0);     Serial.println("[raw] VERDE  (GPIO33, 470 Ω)"); break;
     case 'b': led.setRaw(0, 0, 255);     Serial.println("[raw] AZUL   (GPIO4,  470 Ω)"); break;
     case 'w': led.setRaw(255, 255, 255); Serial.println("[raw] los tres a full"); break;

@@ -45,11 +45,20 @@ public:
 
     State currentState() const { return _state; }
 
-    // Compensación de brillo por canal, 0-255. El rojo lleva 1 kΩ y el verde y el
-    // azul 470 Ω, con Vf distintos: a igual duty NO dan el mismo brillo, así que
-    // el blanco tira a rosa y el ámbar de WARNING sale más rojo que su fila de la
-    // tabla. Los valores se miden en el banco (env:led, tecla 'w'); identidad
-    // mientras tanto, que es el único valor honesto sin haber visto el LED.
+    // Compensación de brillo por canal, 0-255. A igual duty los tres canales NO
+    // dan el mismo brillo: el rojo lleva 220 Ω y el verde y el azul 470 Ω, con Vf
+    // distintos.
+    //
+    // Queda en IDENTIDAD, y eso está medido, no pendiente. El desequilibrio se
+    // corrigió en hardware —el rojo era 1 kΩ y bajó a 220 Ω— porque igualar por
+    // software habría bajado verde y azul, y el conjunto ya es tenue a propósito.
+    // Ojo con el razonamiento: la ley de Ohm decía que el rojo dominaría y que el
+    // blanco saldría rosa, y en placa pasó lo contrario. Lo que cuenta es brillo
+    // PERCIBIDO — la curva fotópica pesa el verde ~4× más que el rojo, y verde y
+    // azul InGaN son más eficientes por mA. Detalle en el BOM.
+    //
+    // Se queda como perilla para el ajuste fino tras montar la carcasa; se barre
+    // en caliente desde el banco (env:led, tecla 'e', y 'w' para juzgar el blanco).
     uint8_t escala[3] = {255, 255, 255};
 
     // Interpolación del fade, libre y pura para poder comprobarla sin placa: el

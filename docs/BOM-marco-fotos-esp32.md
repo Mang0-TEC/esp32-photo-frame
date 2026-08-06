@@ -447,6 +447,22 @@ Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
 
 La capacidad dejó de ser una restricción del proyecto.
 
+### Verificado en hardware real, 2026-08-05
+
+La tarjeta física ya se preparó y se midió, no solo se asumió de la ficha:
+
+- **Cluster de 32,768 B confirmado.** Método usado, en Windows:
+
+  ```powershell
+  Get-CimInstance Win32_Volume -Filter "DriveLetter='F:'" |
+    Select-Object DriveLetter, Label, FileSystem, BlockSize
+  ```
+
+  → `BlockSize 32768`. Coincide con lo asumido arriba. `diskutil info /dev/diskNs1` (macOS, campo Allocation Block Size) sigue siendo la alternativa válida si se reformatea desde Mac.
+- **Label `MARCOFOTOS`.** Sin uso funcional en el firmware — es solo identificación de la tarjeta física frente a otras SD del inventario.
+- **`/fotos/` y `.metadata_never_index` creados desde Windows**, antes de que la tarjeta tocara macOS. El segundo evita que Spotlight indexe el volumen y deje metadatos (`.Spotlight-V100`, `.fseventsd`) que el firmware tendría que filtrar en cada recorrido — ver la nota de la raíz, abajo.
+- **Alineación de partición — ASUMIDA, no verificada.** La partición se reformateó con Disk Management. Si en vez de reformatear se hubiera recreado la partición, quedaría alineada a 1 MB y no al erase block de la tarjeta. Irrelevante para esta carga de trabajo (fotos de hasta 64 KB, sin escritura aleatoria de alto volumen), pero no se afirma en ningún sentido porque no se midió.
+
 **Dos límites reales que sí importan:**
 
 1. **No poner las fotos en la raíz.** No es por un límite de entradas: el famoso tope de 512 entradas en el directorio raíz es de **FAT16**, no de FAT32 — en FAT32 la raíz es una cadena de clusters ordinaria y crece igual que cualquier subdirectorio. Las razones reales son otras: macOS deja metadatos en la raíz del volumen (`.Spotlight-V100`, `.fseventsd`, `.Trashes`) que el firmware tendría que filtrar en cada recorrido, y conviene separar las fotos de `/manifest.txt` y de cualquier otro archivo de servicio. Las fotos van en `/fotos/`.
@@ -488,5 +504,10 @@ Los primeros cuatro no bloquean el desarrollo del firmware — son constantes qu
 - pioarduino stable trae arduino-esp32 3.3.x, muy por encima de la versión del reporte.
 
 **Cómo se resuelve:** probar el provisioning completo (borrar NVS → arrancar → AP `Marco-Fotos` → portal → guardar credenciales → reconectar) **antes** de integrar nada más. Si truena, hay dos salidas: bajar a la plataforma oficial `espressif32` 6.x (arduino-esp32 2.0.17), o escribir el portal cautivo a mano sobre `ESPAsyncWebServer` + `DNSServer`, que ya están en el proyecto.
+
+**Si truena, confusores plausibles en orden — antes de sospechar de WiFiManager mismo:**
+1. **Heap libre en el momento de `autoConnect()`.** Para ese punto ya corrieron `tft.begin()` y `SD.begin()`, y ya están construidos los globales `tft`, `hspi`, `lux`, `server` (`AsyncWebServer`, instanciado aunque no arrancado) y `led`. WiFiManager levanta su propio WebServer síncrono más un `DNSServer` encima de eso — es la vecindad más parecida a un panic por asignación fallida.
+2. **Orden de inicialización — verificado que NO aplica**, leyendo `setup()`: `server.begin()` del `AsyncWebServer` corre después de que `autoConnect()` retorna, no antes ni en paralelo. No hay dos servidores compitiendo por el puerto 80 durante el portal.
+3. **El fade del LED antes de `autoConnect()`** (`asentarLed()` en `main.cpp`) — es el último código que corre antes del punto de falla, útil como landmark para bisecar, pero no un sospechoso: `delay()` en arduino-esp32 es `vTaskDelay`, cede CPU y no corrompe memoria. Detalle en §9 de la especificación funcional.
 
 Es la única dependencia que puede forzar un cambio de plataforma. Por eso se prueba primero.

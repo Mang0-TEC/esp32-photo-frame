@@ -105,9 +105,8 @@ pio device monitor       # 115200
 ├── docs/            Decisiones de hardware y de diseño funcional
 ├── web/             Página de subida: redimensionado, recorte y red
 │   └── test/        Arnés de regresión sobre Chrome sin cabeza
-├── firmware/        Proyecto PlatformIO del marco
-│   └── banco/       Proyecto APARTE: mock del contrato HTTP sobre ESP32 real
-└── cad/             Carcasa y bisel
+└── firmware/        Proyecto PlatformIO del marco
+    └── banco/       Proyecto APARTE: mock del contrato HTTP sobre ESP32 real
 ```
 
 El **banco** implementa las cinco rutas del contrato sin SD ni display, para
@@ -126,7 +125,7 @@ sincronizar.
 | Página de subida | **Completa** — preparación, recorte y subida |
 | Banco de red | Contrato HTTP corriendo sobre un ESP32 real |
 | Componentes | **$387 por comprar** — pantalla, lector SD, sensor y el ESP32 definitivo |
-| Firmware del marco | Sin empezar |
+| Firmware del marco | Esqueleto con lógica real (LED, touch, brillo); decodificación y subida sin implementar |
 | Carcasa | Sin empezar |
 
 ### Lo que ya funciona
@@ -153,6 +152,20 @@ empaquetado. Medido en un iPhone 11, sobre Safari de iOS:
 ```bash
 node web/test/correr.js
 ```
+
+### Firmware del marco — qué corre y qué no
+
+`main.cpp` ya tiene lógica real, no es un stub vacío:
+
+- **Corre:** provisioning con WiFiManager (`autoConnect()`, sin verificar en
+  hardware — ver el pendiente #5), máquina de estados del LED, gesto corto/largo
+  del touch capacitivo, brillo automático por BH1750, y las rutas `/list` y
+  `/photo` del servidor.
+- **Cuerpo vacío, con `TODO`:** `showNextPhoto()`, `drawSetupQR()`,
+  `drawUsageQR()` — sin decodificación JPEG ni generación de QR todavía, aunque
+  `TFT_eSPI`, `TJpg_Decoder` y `QRCode` ya están enlazados.
+- **Responde fijo, no funcional:** `/upload` devuelve `500` sin escribir a la SD,
+  `/delete` devuelve `503` siempre.
 
 ### Lo que falta
 

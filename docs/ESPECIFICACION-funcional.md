@@ -498,6 +498,11 @@ Como el marco vivirá en casa ajena, **no se pueden dejar credenciales en el fir
 
 > **Riesgo abierto:** el issue #1797 de WiFiManager reporta un `Guru Meditation Error` al levantar el portal con arduino-esp32 ≥3.1.0. Probablemente ya corregido, pero **no verificado**. Es la única dependencia capaz de forzar un cambio de plataforma, así que el provisioning se prueba de extremo a extremo antes de integrar nada más. Detalle y planes B en el pendiente #5 del BOM.
 
+> **Confusores conocidos, en orden de plausibilidad, si aparece el panic:**
+> 1. **Heap libre en el momento de `autoConnect()`.** Para ese punto ya corrieron `tft.begin()` y `SD.begin()`, y ya están construidos los globales `tft`, `hspi`, `lux`, `server` (el `AsyncWebServer`, instanciado aunque no arrancado) y `led`. WiFiManager levanta su propio WebServer síncrono más un `DNSServer` encima de eso — es la vecindad más parecida a un panic por asignación fallida.
+> 2. **Orden de inicialización — verificado que NO aplica.** `server.begin()` del `AsyncWebServer` se llama después de que `autoConnect()` retorna, no antes ni en paralelo: no hay dos servidores compitiendo por el puerto 80 durante el portal.
+> 3. **El fade del LED antes de `autoConnect()`** (`asentarLed()`, ver §9) — es el último código que corre antes del punto de falla, útil como referencia para bisecar, pero no un sospechoso: `delay()` en arduino-esp32 es `vTaskDelay`, cede CPU al scheduler y no corrompe memoria.
+
 **Flujo de primer arranque:**
 
 1. El marco no encuentra red conocida.
@@ -650,6 +655,12 @@ La lógica es la de un celular:
 
 **Esto resuelve el objetivo original sin necesitar detección de presencia:** si el cuarto está oscuro, nadie está viendo el marco.
 
+### La rampa avanza sin histéresis — pendiente
+
+El firmware sube o baja el backlight un paso de PWM por lectura de BH1750 (período de ~200 ms), así que el recorrido completo entre extremos tarda ~40 s — deliberadamente lento, al ritmo al que un cuarto se oscurece de verdad, no un salto brusco.
+
+Lo que falta: **histéresis entre los umbrales de lux.** Con el valor de luz oscilando justo en el borde de un umbral (100 lux, 10 lux), el brillo objetivo puede alternar entre dos niveles lectura a lectura, y aunque la rampa de un paso amortigua el salto, no lo elimina. Marcado `TODO` en el propio código (`updateBrightness()`, `firmware/src/main.cpp`) — no bloquea el resto del firmware, se resuelve cuando el sensor esté en placa y se pueda ver el efecto real en vez de solo razonarlo.
+
 ### Degradación elegante
 
 Si el BH1750 falla, la pantalla se queda en **brillo fijo**, no apagada. Nunca debe quedarse en negro por un sensor descompuesto.
@@ -683,6 +694,14 @@ Pad conductor pegado **por dentro** de la pared de la carcasa. Funciona a travé
 **El toque largo es contextual a propósito.** Un solo gesto cubre los dos casos, y el segundo es la ruta de recuperación para el día que cambien el módem (§5). Nada que aprender, nada que recordar, y ningún AP encendido de forma permanente.
 
 Para un objeto que debe sentirse a producto terminado, esto supera a cualquier botón físico.
+
+### El umbral de lectura sigue sin calibrarse — depende del pad, que no existe
+
+El firmware trae hoy un umbral fijo (`TOUCH_THRESHOLD = 40` en `firmware/src/main.cpp`), marcado en el propio código como valor inventado, sin debounce.
+
+La calibración real no es una constante: es tomar la media de N lecturas de `touchRead()` al arrancar y multiplicarla por ~0.6 para fijar el umbral, más exigir 2-3 lecturas consecutivas de flanco antes de aceptar un toque como real (evita falsos positivos de una sola lectura ruidosa). El valor crudo de reposo depende del pad elegido, del grosor real de PLA entre el pad y el dedo, de la humedad y de la temperatura — es const específica de esta unidad física, no una constante de diseño.
+
+**No se fija hoy porque el pad conductor todavía no existe** (ver la sección de touch capacitivo del BOM). Cualquier número que se escriba antes de tener el pad soldado sería tan inventado como el `40` actual.
 
 ---
 
@@ -740,6 +759,12 @@ y deja las constantes de duración sin calibrar nada. La interpolación está
 extraída a una función pura (`LedRGB::lerp`) precisamente para poder comprobarla
 sin placa; el banco y el firmware la verifican al arrancar.
 
+### El fade se termina a la fuerza justo antes de `autoConnect()`
+
+`setup()` llama a `asentarLed(400)` inmediatamente antes de `wm.autoConnect()`: un bucle que corre `led.update()` y `delay(10)` durante 400 ms para que el fade del LED termine de verdad en vez de quedar congelado a medio camino mientras `autoConnect()` bloquea el hilo —a veces por minutos, si levanta el portal—. Sin esto, lo que se queda pintado en el LED durante todo ese tiempo es el frame de un fade a medias, o directamente negro.
+
+Es el **último código que corre antes del punto en el que el issue #1797 reporta el `Guru Meditation Error`** (§5), así que es el punto de referencia natural para bisecar el pendiente #5 si aparece. **No es un sospechoso en sí mismo**: `delay()` en arduino-esp32 es `vTaskDelay`, que cede CPU al scheduler de FreeRTOS y no toca memoria — no hay mecanismo por el que un `delay(10)` en bucle corrompa nada. La lista completa de confusores plausibles, con éste incluido como landmark y no como causa, está en §5.
+
 ### Los tres canales no dan el mismo brillo al mismo duty
 
 Resistencias de valor alto (470 Ω / 1 kΩ) para que queden tenues, y montaje en cara trasera o inferior.
@@ -774,6 +799,7 @@ es la primera medición que hay que hacer, porque puede mover la lista de compra
 | Procesador | ESP32 clásico WROOM, USB-C (a comprar) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
 | Pantalla | ST7796S 3.5" IPS SPI | Nextion (25 fotos precompiladas), all-in-one 5" (presupuesto) |
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
+| Sistema de archivos | FAT32, cluster 32 KB (= un cluster por foto dentro de presupuesto) | NTFS (FatFs solo implementa FAT12/16/32); exFAT (`FF_FS_EXFAT=0` en el binario precompilado de arduino-esp32 3.3.11 — no es "no soportado", está deshabilitado en un binario que este proyecto no controla; habilitarlo obligaría a migrar a ESP-IDF) |
 | Carga de fotos | Servidor web local + Canvas | App, SD extraíble, USB |
 | Redimensionado | En el navegador del celular | En el ESP32 (imposible) |
 | Selección de fotos | Multi-selección; foto completa con barras por defecto, recorte manual opcional por foto | Una a la vez (tedioso con 30 fotos), recorte automático al centro (decapita gente en silencio y deja el aviso de barras sin objeto), recorte obligatorio por foto (convierte la subida en una tarea) |
@@ -813,11 +839,13 @@ es la primera medición que hay que hacer, porque puede mover la lista de compra
 
    **Hecho y medido:** lector del tag EXIF y de las dimensiones del marcador SOF por bytes, escalado por halving con ping-pong de dos canvas, encoder con búsqueda binaria acotada y banda de aceptación, presupuesto por densidad, aviso de barras en lenguaje llano, panel de diagnóstico, descarga del JPEG a disco (el modo mock, que permite probar la página completa sin firmware), rejilla y cola con multi-selección, editor de recuadro con «quitar foto», y **la capa de red contra `/upload`** — bucle propio con concurrencia 1, timeout por foto, los ocho desenlaces de la tabla de §4, corte por red caída, reintento de solo las que fallaron y verificación de integridad bajo diagnóstico. 84 comprobaciones automatizadas en Chrome, 38 de ellas de la capa de red.
 
-   **Falta:** el empaquetado (gzip → array de C en PROGMEM), y medir la subida en el iPhone contra el banco.
+   **Ya medido, no falta:** la subida en el iPhone contra el banco — tanda de 30 fotos reales a 315 ms/foto, 107.9 KB/s, integridad byte a byte, con `413`, `507`, `500` con reintento parcial, timeout, corte por WiFi caído y un reinicio del marco a media tanda, todos ejercitados en placa (§4 y README tienen las cifras completas).
 
-3. **Repositorio en GitHub** con los dos documentos, `web/`, y GitHub Pages activado — sirve la página por HTTPS y permite probarla desde el celular real, no solo desde escritorio. **Es lo que desbloquea el punto 1**, porque Safari de iOS no va a abrir un `file://` de otra máquina.
+   **Falta:** solo el empaquetado (gzip → array de C en PROGMEM).
+
+3. **Repositorio en GitHub** con los dos documentos, `web/`, y pruebas desde el celular real. **Hecho, con GitHub Pages descartado a propósito** — no reabrir: nada en el pipeline exige contexto seguro (HTTPS), así que la prueba en dispositivo real se resuelve sirviendo por `python3 -m http.server` en la LAN, y en producción la página vive en PROGMEM servida por el propio ESP32. GitHub Pages nunca fue el camino de producción, solo una opción de prueba que resultó innecesaria.
 4. **Instalar PlatformIO** y armar el `platformio.ini` del BOM. Compila sin placa conectada; valida que todas las dependencias resuelvan. **Hecho** — build limpio verificado, ver el BOM.
-5. Formatear la SD en FAT32 y crear `/fotos/`. Al hacerlo, confirmar el tamaño de cluster (ver el BOM).
+5. Formatear la SD en FAT32 y crear `/fotos/`. Al hacerlo, confirmar el tamaño de cluster. **Hecho, 2026-08-05** — cluster de 32,768 B confirmado sobre la tarjeta física, label `MARCOFOTOS`, `/fotos/` creado. Detalle completo en el BOM.
 
 Casos de prueba mínimos para los pasos 1 y 2: foto 4:3, 16:9, vertical de iPhone sin editar y sin pasar por WhatsApp (EXIF), y una de 12 MP para cronometrar el escalado en celular.
 

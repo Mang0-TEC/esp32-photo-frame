@@ -18,6 +18,11 @@
     return false;
   };
 
+  /* El arnés prueba el comportamiento bajo diagnóstico (verificación de integridad,
+     mensajes técnicos de bug) salvo en el bloque dedicado a CFG.DIAG = false, más
+     abajo. No puede depender del default de producción de la página. */
+  CFG.DIAG = true;
+
   const jpeg = (w, h, nombre) => new Promise(res => {
     const c = document.createElement("canvas");
     c.width = w; c.height = h;

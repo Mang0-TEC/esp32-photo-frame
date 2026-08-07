@@ -41,9 +41,9 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 7 | Cargador USB 5 V ≥1 A + cable USB-C | Alimentación permanente |
 | 8 | Capacitor electrolítico 100 µF / 16 V | ✔ Confirmado |
 | 9 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas |
-| 10 | Transistor PN2222A (NPN, TO-92) | ✔ Sustituye al 2N7000 |
+| 10 | Transistor PN2222A (NPN, TO-92) | **Sin uso.** Era para el backlight en Caso A; `BL` resultó entrada lógica y va directo a GPIO19. Se queda en inventario |
 | 11 | LED RGB 5 mm **cátodo común** | ✔ Sustituye a los dos LEDs separados |
-| 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, así que **el Caso A del backlight necesita una tercera** para la base del PN2222A — confirmado que hay más en inventario. Ver la nota de corriente por canal, abajo |
+| 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, y **no hace falta una tercera**: el backlight resultó Caso B y va directo a GPIO19, sin transistor y sin resistencia de base. Ver la nota de corriente por canal, abajo |
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
 | 15 | Filamento PLA | Carcasa y bisel |
@@ -141,32 +141,68 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 
 ### Backlight — determinar el tipo de pin `BL` antes de soldar
 
-El pin `BL` equivale al `LED`/`BLK`/`LED-A` de otros módulos. Con solo `VIN` a 5 V y `GND` conectados:
+El pin `BL` equivale al `LED`/`BLK`/`LED-A` de otros módulos.
 
-| Prueba | Resultado | Conclusión |
+> **Corrección al procedimiento anterior, que era ambiguo.** La versión previa de
+> esta tabla decía «solo uno funciona → respuesta inequívoca». **No es cierto:**
+> dos desenlaces distintos mandan `BL` a alto y se ven idénticos en una prueba de
+> sí/no, pero son circuitos muy diferentes —una entrada lógica pasa µA y un ánodo
+> crudo pasa decenas de mA—. El discriminante es la **corriente**, no el
+> encendido, y por eso el paso 3 lleva ahora una medición. Es la misma técnica que
+> quedó escrita para el LED RGB: voltímetro sobre la resistencia e `I = V/R`.
+
+#### Paso 0 — la lectura al aire, que es la que más dice y no cuesta nada
+
+Solo `VIN` a 5 V y `GND`. `BL` **al aire**. Multímetro en DC volts de `BL` a GND: sus 10 MΩ de entrada pasan ~0.5 µA, así que no enciende ni daña nada.
+
+| Lectura en `BL` al aire | Qué significa | Caso |
 |---|---|---|
-| `BL` al aire | Prende | Tiene pull-up, activo por defecto |
-| `BL` a 3.3 V con 100 Ω en serie | Prende | **Caso B:** entrada lógica → GPIO directo, **sin transistor** |
-| `BL` a GND directo | Prende | **Caso A:** cátodo crudo → va el PN2222A |
+| ≈5 V (o ≈3.3 V) **y el backlight encendido** | entrada lógica con pull-up | **B** |
+| ≈0 V, backlight apagado | entrada lógica con pull-down, o base flotante | **B** — confirmar en el paso 3 |
+| **intermedia, ~1.5–3 V**, backlight apagado | hay un LED en serie hacia el riel: el nodo se queda un Vf por debajo | **A — cátodo crudo** |
 
-Solo uno funciona → respuesta inequívoca. Ninguna prueba daña nada (la placa trae resistencia limitadora en serie).
+La lectura intermedia es la firma de un diodo en el camino, y va antes de conectar ningún cable.
 
-**Si resulta Caso A** — circuito con PN2222A:
-- Emisor → GND
-- Colector → pin `BL` del display
-- Base → GPIO19 a través de **470 Ω**
-- **10 kΩ de base a emisor** (evita que flote durante el arranque y el backlight parpadee)
+#### El paso decisivo: `BL` a un riel a través de 100 Ω, y medir la caída **sobre la resistencia**
 
-> Cálculo: (3.3 V − 0.7 V) ÷ 5 mA ≈ 520 Ω → 470 Ω comercial. Da ~5.5 mA de base; con beta forzado ~20 satura los 100 mA de colector.
+Los 100 Ω hacen doble trabajo: limitan la corriente y sirven de shunt. `I = V/R`, la misma técnica que quedó escrita para el LED RGB. El entregable es la corriente, no el «prende sí o no».
 
-### PN2222A — pinout PENDIENTE de confirmar
+### Resultado — pendiente #1 CERRADO, Caso B: `BL` es entrada lógica
 
-Medición realizada: pin central = base (NPN confirmado). Pero las lecturas hacia los extremos dieron **0.704 V y 0.703 V** — 1 mV de diferencia está dentro del ruido del instrumento y **no permite distinguir emisor de colector**. La regla del "emisor lee más alto" requiere 20-50 mV de diferencia.
+**Medido en placa sobre el AR3952, con 100 Ω en serie:**
 
-Dos formas de resolverlo:
+| Riel | V sobre los 100 Ω | Corriente | Tensión en `BL` |
+|---|---|---|---|
+| 5.0 V | 0.140 V | **1.40 mA** | 4.86 V |
+| 3.3 V | 0.088 V | **0.88 mA** | 3.21 V |
 
-1. **Zócalo hFE del multímetro** (agujeros marcados EBCE), si lo tiene. Inserta en una orientación, anota, invierte emisor y colector, compara. Orientación correcta → beta 100-300. Invertida → beta 2-5. Inequívoco.
-2. **Prueba empírica.** No se daña nada al conectarlo al revés. Arma con E-B-C (estándar en PN2222A con cara plana de frente) y prueba el backlight. Si sale a media luz, invierte las patas de los extremos.
+Prende en los dos, y con un potenciómetro en serie la atenuación se distingue a simple vista.
+
+**Por qué es inequívoco.** 1.40 mA no encienden un panel de 3.5". Si `BL` fuera el ánodo del string, la corriente del backlight —decenas de mA— pasaría por ese pin y el nodo quedaría clavado cerca del Vf, no a 0.14 V del riel. Que el panel encienda brillante mientras el pin pasa 1.4 mA significa que **la corriente del backlight sale de `VIN` por un driver del propio módulo**, y eso es la definición de una entrada de control.
+
+**Y el Caso A queda descartado por la misma observación:** un cátodo crudo no puede encender con 5 V aplicados al pin — los LEDs quedarían sin tensión o en inversa.
+
+**Las dos lecturas ajustan una recta y dan la impedancia de entrada:** ΔV/ΔI = (4.86 − 3.21) V / (1.40 − 0.88) mA = **3.17 kΩ**. Es un valor de catálogo para una resistencia de base, y explica la atenuación con el potenciómetro: control por corriente de base en zona activa. El ajuste deja un offset de ~0.42 V, más bajo que el Vbe de un BJT de silicio; con dos puntos de un multímetro de mano eso está en el ruido y **no se afirma si hay o no una unión ahí dentro**. Da igual para la decisión.
+
+> **La tabla de umbrales que traía este documento se quedó corta y conviene decirlo.** Proponía «< 1 mA → entrada lógica» y «> 10 mA → ánodo», y el valor real, 1.4 mA, cayó en el hueco. El hueco no genera ambigüedad porque la pregunta de fondo es de orden de magnitud —¿es ésta la corriente del backlight o no?— y 1.4 mA está unas 70 veces por debajo de lo que consume el panel. El criterio correcto es ése, no un umbral numérico.
+
+**Consecuencias:**
+
+- **`BL` va directo a GPIO19**, PWM por LEDC en sentido intuitivo (`ledcWrite(pin, 0-255)`, alto = brillante). **Sin transistor, sin resistencia de base, sin el 10 kΩ.**
+- **El pendiente #2 desaparece**, y con él el PN2222A del circuito del backlight. Ver abajo.
+- El backlight se alimenta de `VIN` (5 V) a través del driver del módulo, que es lo que este BOM ya especificaba para el riel de 5 V.
+
+**Lo que el voltímetro no puede contestar y queda para el banco:** si el brillo a 3.3 V iguala al de 5 V. Con 0.88 mA de excitación y una beta de 100 el driver satura ~88 mA, y con 200 llega a 176 — o sea que *debería* estar saturado, pero eso es cálculo con una beta supuesta y el criterio real es el ojo. Se resuelve al primer arranque de `[env:display]` con las teclas `9` y `0`, en la configuración de producción y no en el banco de cables.
+
+**Tampoco se ha comprobado el arranque en frío con `BL` al aire.** Sin corriente de base el backlight debería quedar apagado, que es lo que `display.cpp` asume al poner el brillo a 0 antes de `tft.begin()`. Si resultara que enciende, hay destello a pantalla llena en cada encendido del marco mientras GPIO19 flota, y eso es regla 3.
+
+**Notas del procedimiento**, por si hay que repetirlo con otro módulo: en cuarto oscuro y mirando el **canto** del módulo, no el frente — con el ST7796S sin inicializar el panel puede quedar opaco y el backlight solo se ve como fuga de luz en los bordes. El riel del paso 3 sale del pin del propio devkit, con el devkit alimentado, para compartir referencia de tierra. Ninguno de los pasos daña nada.
+
+### PN2222A — fuera del backlight, pendiente #2 cerrado por irrelevancia
+
+**El transistor no va.** `BL` resultó entrada lógica (arriba), así que no hay nada que conmutar: GPIO19 maneja el driver del módulo directamente. Con eso caen también sus 470 Ω de base y el 10 kΩ de base a emisor, y **la tercera resistencia de 470 Ω que este documento reservaba para el Caso A ya no hace falta**.
+
+El PN2222A se queda en inventario sin uso asignado. Su pendiente de pinout —pin central = base confirmado, pero 0.704 V contra 0.703 V hacia los extremos, dentro del ruido del instrumento— **deja de importar**: se resolvería con zócalo hFE (orientación correcta → beta 100-300, invertida → beta 2-5) el día que se le encuentre otro trabajo. No es una deuda de este proyecto.
 
 ### LED RGB — cátodo común (confirmado con multímetro)
 
@@ -289,7 +325,12 @@ Ambas rutas son válidas para el ESP32 clásico. Se elige pioarduino por estar m
 
 ### `platformio.ini`
 
+Los flags de TFT_eSPI **no viven aquí dentro**: viven en `firmware/tft_comun.ini`, sección `[tft]`, y entran por `extra_configs`. La razón está tres subsecciones más abajo, con el banco del display; el resumen es que un pin divergente haría que el banco probara otro circuito en silencio.
+
 ```ini
+[platformio]
+extra_configs = tft_comun.ini   ; los flags de TFT_eSPI, compartidos con el banco
+
 [env:marco]
 ; Pinear a un tag de release concreto, no a "stable" — la etiqueta se mueve
 platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip
@@ -310,6 +351,22 @@ lib_deps =
 
 build_flags =
     ; --- TFT_eSPI: config por flags, NUNCA editando User_Setup.h ---
+    ; Driver, geometría, pines y fuentes vienen de tft_comun.ini. Si ese archivo
+    ; falta, esta línea no resuelve y el build se cae con «No section: 'tft'» —
+    ; verificado. No hay forma de compilar en silencio con otros pines.
+    ${tft.build_flags}
+    ; Las frecuencias NO se comparten: SPI_FREQUENCY es la variable del pendiente
+    ; #3 y el barrido de tres binarios del banco no debe tocar la del marco.
+    -D SPI_FREQUENCY=27000000       ; arrancar aquí, subir después
+    -D SPI_READ_FREQUENCY=20000000  ; sin esta línea TFT_eSPI cae a 10 MHz, no
+                                    ; a SPI_FREQUENCY (TFT_eSPI.h:126)
+```
+
+Y `firmware/tft_comun.ini`, que es lo que resuelve ese `${tft.build_flags}`:
+
+```ini
+[tft]
+build_flags =
     -D USER_SETUP_LOADED=1
     -D ST7796_DRIVER=1
     -D TFT_WIDTH=320
@@ -326,10 +383,10 @@ build_flags =
     -D LOAD_FONT4=1
     -D LOAD_GFXFF=1
     -D SMOOTH_FONT=1
-    -D SPI_FREQUENCY=27000000       ; arrancar aquí, subir después
-    -D SPI_READ_FREQUENCY=20000000
     ; USE_HSPI_PORT deliberadamente ausente
 ```
+
+**La extracción se verificó contra el binario, no solo compilando:** RAM 55,988 B y Flash 1,232,897 B, idénticos al byte antes y después. Si algún flag se hubiera perdido en el camino, el tamaño habría cambiado.
 
 **`TFT_WIDTH=320` y `TFT_HEIGHT=480` son las dimensiones físicas del panel y no dependen de cómo se monte el marco.** No se tocan al cambiar la orientación. Lo que fija la orientación es `tft.setRotation(0)` en el firmware, y ese es justamente el valor nativo del ST7796S: montado vertical, el driver no aplica ninguna transformación de coordenadas. Ver §6 de la especificación funcional.
 
@@ -361,17 +418,51 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 
 Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@3.12.0` y `AsyncTCP@3.5.0`. **Al actualizar cualquiera de las tres aquí, sincronizar allá.** Si divergen, el banco deja de probar lo que el firmware va a correr — que es el único motivo de que ese mock esté en el ESP32 y no en Python. El archivo del banco lleva el aviso en su encabezado, pero eso se lee estando ya dentro; el desfase se produce editando **este** lado.
 
-#### `firmware/banco/` tiene tres envs, uno por cosa que se mide
+#### `firmware/banco/` tiene cuatro envs, uno por cosa que se mide
 
 | env | Qué prueba | GPIOs | `lib_deps` |
 |---|---|---|---|
 | `mock` | El contrato HTTP de §4, sin SD y sin display | ninguno | las dos async, duplicadas a mano |
 | `led` | `LedRGB` contra el LED real | 25, 33, 4 | ninguna |
 | `wifi` | El provisioning de WiFiManager — pendiente #5, **etapa 1** | 25, 33, 4 (el LED) | `WiFiManager`, duplicada a mano |
+| `display` | El display y el BH1750 — pendientes **#1, #3 y #4** | 18, 23, 5, 17, 16, 19 · 21, 22 | `TFT_eSPI`, duplicada a mano |
 
 `default_envs = mock`, así que `pio run` a secas sigue compilando solo el banco de
-red; los otros dos se piden con `-e led` y `-e wifi`. Cada uno lleva su
-`build_src_filter` — sin eso los tres `setup()` acaban en el mismo binario.
+red; los otros tres se piden con `-e led`, `-e wifi` y `-e display`. Cada uno lleva
+su `build_src_filter` — sin eso los cuatro `setup()` acaban en el mismo binario.
+
+#### Los flags de TFT_eSPI son la única excepción a la copia manual
+
+`env:display` **no copia** los flags de TFT_eSPI: los toma de `../tft_comun.ini`
+con `extra_configs`, el mismo archivo que usa `[env:marco]`. Es deliberado y es la
+única duplicación de este proyecto que se resolvió compartiendo. La asimetría
+tiene una razón concreta:
+
+- Una **versión de librería** divergente es **detectable**: produce otro binario y
+  el encabezado de cada `.ini` lo avisa. Se acepta copiarla.
+- Un **pin de TFT** divergente no se nota por ningún lado: haría que el banco
+  probara **otro circuito**, en silencio. Y todo el sentido del pendiente #3 es que
+  su respuesta se transfiera al marco — con otros pines no se transfiere nada.
+
+**Tampoco hay caída silenciosa si el archivo falta**, que es la propiedad que este
+proyecto ya le exige a `WM_STRINGS_FILE`. Verificado renombrándolo a mano:
+
+```
+InvalidProjectConfError: Invalid '…/banco/platformio.ini': 'No section: 'tft''
+```
+
+**Y `../tft_comun.ini` resuelve bien desde cualquier directorio**, también con
+`pio run -d firmware/banco` desde la raíz del repo — comprobado en la fuente de
+PlatformIO instalada, no supuesto: `run/cli.py:108` hace `with fs.cd(project_dir)`
+**antes** de construir el `ProjectConfig`, y `project/config.py:119-123` resuelve
+el patrón con `glob.glob` ya dentro de ese directorio. Una sección `[tft]` tampoco
+emite warning: la validación salta todo scope que no sea `platformio` ni `env`
+(`project/config.py:131-133`).
+
+**`SPI_FREQUENCY` y `SPI_READ_FREQUENCY` se quedan fuera del archivo compartido, a
+propósito.** La primera es justo la variable del pendiente #3, y dejarla local es
+lo que hace que el barrido de tres binarios del banco no toque nunca la
+configuración del marco.
 
 **`env:led` y `env:wifi` compilan `firmware/src/LedRGB.cpp` en su sitio, sin
 copiarlo** (`+<../../src/LedRGB.cpp>` en los dos). El banco tiene que probar el
@@ -526,13 +617,15 @@ El rango cubre desde cuarto casi a oscuras hasta luz de día directa — exactam
 
 | # | Pendiente | Cómo se resuelve |
 |---|---|---|
-| 1 | Tipo de pin `BL` (Caso A o B) | Prueba de tres pasos, arriba |
-| 2 | Pinout emisor/colector del PN2222A | Zócalo hFE, o prueba empírica del backlight |
-| 3 | Velocidad SPI máxima estable | Empírico: 27 → 40 → 80 MHz |
-| 4 | Dirección I2C del BH1750 | Escaneo I2C; casi seguro `0x23` |
+| 1 | ~~Tipo de pin `BL` (Caso A o B)~~ | **CERRADO 6-ago-2026. Caso B**, entrada lógica: 1.40 mA a 5 V y 0.88 mA a 3.3 V sobre 100 Ω. GPIO19 directo, sin transistor. Arriba |
+| 2 | ~~Pinout emisor/colector del PN2222A~~ | **CERRADO por irrelevancia**, mismo día: el Caso B saca al transistor del diseño. Arriba |
+| 3 | Velocidad SPI máxima estable | Empírico: 27 → 40 → 80 MHz, tres binarios de `firmware/banco/` `[env:display]` |
+| 4 | Dirección I2C del BH1750 | Escaneo I2C del mismo env; casi seguro `0x23` |
 | 5 | ~~WiFiManager con arduino-esp32 ≥3.1.0~~ | **CERRADO 6-ago-2026.** No panica. Ver abajo |
 
-Los cuatro que quedan no bloquean el desarrollo del firmware — son constantes que se ajustan al final. Ya no hay ningún pendiente capaz de forzar un cambio de plataforma.
+Los dos que quedan no bloquean el desarrollo del firmware — son constantes que se ajustan al final, y los dos se miden con el mismo binario. Ya no hay ningún pendiente capaz de forzar un cambio de plataforma ni de circuito.
+
+**Quedan dos comprobaciones visuales pegadas al #1**, que un multímetro no puede dar y que salen gratis al arrancar `[env:display]` por primera vez: que el brillo a 3.3 V iguale al de 5 V (teclas `9` y `0`), y que con `BL` al aire el backlight arranque **apagado**, sin destello mientras GPIO19 flota. Detalle arriba.
 
 ### Pendiente #5 — CERRADO, 2026-08-06. El panic no ocurre
 

@@ -915,8 +915,8 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 ### Requiere los componentes en mano, en este orden
 
 6. ~~**Provisioning de extremo a extremo (pendiente #5).**~~ **Hecho, 6-ago-2026.** Iba primero por ser lo único capaz de forzar un cambio de plataforma, y no lo fuerza: el panic del issue #1797 no ocurre. Se probó en dos etapas para separar «es la librería» de «es la presión de heap» — `firmware/banco/` `[env:wifi]` con WiFiManager y el LED a solas, y `[env:marco]` con los cinco globales ya construidos. De ahí salió el fallo real, que era otro: `getWiFiIsSaved()` mintiendo antes de `WiFi.mode(WIFI_STA)`, corregido. Cifras en el pendiente #5 del BOM.
-7. Prueba de tres pasos del pin `BL`.
-8. Confirmar pinout del PN2222A (zócalo hFE).
+7. ~~**Prueba del pin `BL`.**~~ **Hecho, 6-ago-2026. Caso B: entrada lógica.** Con 100 Ω en serie, el pin pasa **1.40 mA a 5 V** y **0.88 mA a 3.3 V** —o sea 3.17 kΩ de impedancia de entrada por ajuste de dos puntos— mientras el panel enciende brillante. Esa corriente es ~70× menor que la del backlight, así que la potencia sale de `VIN` por un driver del módulo y `BL` solo lo gobierna. **`BL` va directo a GPIO19, con PWM por LEDC y sin transistor.** Cifras y método en el BOM.
+8. ~~Confirmar pinout del PN2222A (zócalo hFE).~~ **Desaparece con el punto 7:** el transistor sale del diseño del backlight, junto con sus 470 Ω de base y el 10 kΩ.
 9. Afinar velocidad SPI (27 → 40 → 80 MHz).
 10. Confirmar dirección I2C del BH1750.
 11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.

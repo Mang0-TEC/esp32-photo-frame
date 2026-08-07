@@ -455,7 +455,7 @@ build_flags =
 | `ESP32Async/ESPAsyncWebServer` | **No usar `me-no-dev/ESPAsyncWebServer`: archivado el 20-ene-2025, solo lectura.** El fork ESP32Async incluye los fixes de concurrencia de `yubox-node-org`, que es precisamente donde vivían los bugs de upload multipart. Va en 3.x; anuncian una 4.x que dropea ESP8266 e IDF 4.x → **fijar la versión** |
 | `ESP32Async/AsyncTCP` | Dependencia obligatoria del anterior. Debe venir del mismo fork, no mezclar con la de me-no-dev. **Su hilo `async_tcp` corre a prioridad 10 con 16384 B de stack** (`CONFIG_ASYNC_TCP_STACK_SIZE`, `8192*2`) — ver la trampa de abajo |
 | `tzapu/WiFiManager` | **Riesgo cerrado 6-ago-2026**: el panic del issue #1797 no ocurre, provisioning verificado de extremo a extremo. Dos cosas que sí salieron de ahí: `getWiFiIsSaved()` miente si se llama antes de `WiFi.mode(WIFI_STA)`, y el portal se tradujo al español con `WM_STRINGS_FILE` porque el `wm_strings_es.h` de la librería está sin traducir — pendiente #5 |
-| `bodmer/TJpg_Decoder` | **No confundir con `JPEGDecoder`**, el anterior del mismo autor. El ejemplo oficial `ESP32_SDcard_jpeg` usa el viejo; la API es distinta |
+| `bodmer/TJpg_Decoder` | **No confundir con `JPEGDecoder`**, el anterior del mismo autor. El ejemplo oficial `ESP32_SDcard_jpeg` usa el viejo; la API es distinta. Tres cosas que cuestan encontrar y ya están medidas: su `User_Config.h` define `TJPGD_LOAD_SD_LIBRARY` y **arrastra `<SD.h>` con su objeto global `SD`** —que aquí no se usa jamás, pero compilaría sin quejarse—; `setJpgScale()` toma el **divisor** (1/2/4/8) y un valor que no sea ésos cae a 1 **en silencio**; y el callback **no debe devolver `false`** para recortar por abajo, porque `jd_decomp` lo convierte en `JDR_INTR` y la foto se da por fallida. Ver §6 |
 
 Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar la forma con URL de git y tag:
 
@@ -538,6 +538,14 @@ streaming con respuesta por trozos.
 **Coste medido:** `[env:marco]` pasa de 56,004 a **56,744 B de RAM** y de
 1,232,933 a **1,274,699 B de flash** (+740 B y +41.8 KB). Es lo que pesa
 `esp_vfs_fat` + sdspi frente al `sd_diskio` hecho a mano de Arduino.
+
+> **Y el pipeline de visualización encima cuesta +64 B de RAM y +13.3 KB de
+> flash** (56,808 y 1,288,031 B, 7-ago-2026). Los 64 B sorprenden hasta que se
+> mira dónde está el workspace de `TJpg_Decoder`: el global `TJpgDec` son
+> **3,580 B de `.bss`** que **el binario ya pagaba con cero llamadas** —
+> comprobado recompilando `HEAD` y buscando el símbolo con `nm`, no supuesto. O
+> sea que enlazar la librería es lo que cuesta la RAM, y usarla no cuesta nada
+> más: el heap durante la decodificación se midió en **+0 B**. Detalle en §6.
 
 **`format_if_mount_failed` se queda en `false` a propósito.** Formatear sola la
 tarjeta ante un montaje fallido borraría las fotos, que es el único sitio donde
@@ -771,7 +779,11 @@ La tarjeta física ya se preparó y se midió, no solo se asumió de la ficha:
 
   → `BlockSize 32768`. Coincide con lo asumido arriba. `diskutil info /dev/diskNs1` (macOS, campo Allocation Block Size) sigue siendo la alternativa válida si se reformatea desde Mac.
 - **Label `MARCOFOTOS`.** Sin uso funcional en el firmware — es solo identificación de la tarjeta física frente a otras SD del inventario.
-- **`/fotos/` y `.metadata_never_index` creados desde Windows**, antes de que la tarjeta tocara macOS. El segundo evita que Spotlight indexe el volumen y deje metadatos (`.Spotlight-V100`, `.fseventsd`) que el firmware tendría que filtrar en cada recorrido — ver la nota de la raíz, abajo.
+- **`/fotos/` y `.metadata_never_index` creados desde Windows**, antes de que la tarjeta tocara macOS. El segundo evita que Spotlight indexe el volumen y deje `.Spotlight-V100` en la raíz — ver la nota de la raíz, abajo.
+
+  > **Corrección, 7-ago-2026: ese archivo NO evita `.fseventsd`.** La tarjeta preparada lo tiene en la raíz, y no tiene `.Spotlight-V100`: son dos mecanismos distintos y `.metadata_never_index` solo apaga el indexado. No cambia ninguna decisión —las fotos no van en la raíz precisamente por esto— pero la afirmación estaba de más.
+  >
+  > **Y macOS deja además un `._NNNNNNNN.JPG` por cada foto DENTRO de `/fotos/`.** Son sidecars AppleDouble de 4 KB, ocultos a un `ls` normal, y aparecen al copiar desde la Mac — que es como se cargan las fotos mientras `/upload` no exista. **No hay que filtrarlos a mano**: `nombreValido()` los rechaza por longitud (15 ≠ 12), y el recorrido de reconstrucción los cuenta como descartados. Medido en placa: `7 validas, 7 descartadas`. El guard contra `?n=../manifest.txt` resultó cubrir también la basura real del sistema de archivos.
 - **Alineación de partición — ASUMIDA, no verificada.** La partición se reformateó con Disk Management. Si en vez de reformatear se hubiera recreado la partición, quedaría alineada a 1 MB y no al erase block de la tarjeta. Irrelevante para esta carga de trabajo (fotos de hasta 64 KB, sin escritura aleatoria de alto volumen), pero no se afirma en ningún sentido porque no se midió.
 
 **Dos límites reales que sí importan:**
@@ -830,6 +842,14 @@ consecuencias en §3 de la especificación funcional.
 ahí está buena parte del coste. Si algún día ese número estorba, la salida es
 `readdir()` sobre el VFS, que no abre nada — no se hace hoy porque el recorrido
 solo ocurre cuando el manifiesto falta.
+
+**Contrastado con fotos reales desde `[env:marco]`, 7-ago-2026:** el fallback ya
+está implementado y su recorrido dio **4,500 y 6,214 µs/entrada** en dos
+corridas, sobre 14 entradas —7 fotos de 8 a 65 KB más los 7 sidecars de macOS—.
+Los 4,763 µs de arriba caen dentro, así que la extrapolación de §3 se sostiene,
+pero **con 14 entradas la medición es ruidosa: las dos corridas difieren un 38 %
+entre sí, y no se debe citar un valor único.** La cifra buena para extrapolar
+sigue siendo la de los 100 archivos.
 
 ### BH1750
 
@@ -915,6 +935,28 @@ Heap libre en bytes, placa con credenciales guardadas en las dos:
 **Confusor #1 descartado con números.** Los cuatro globales de más cuestan 13,644 B de `.bss`, y sus `begin()` solo 2,584 B encima. Con el portal realmente abierto (etapa 1, placa virgen, 9 redes escaneadas) el mínimo histórico tocó **189,108 B libres** — o sea que el portal cuesta unos 42 KB de suelo transitorio sobre un margen de más de 200 KB.
 
 **Y `mayorBloque` se quedó en 110,580 B en las seis mediciones de las dos etapas**, sin moverse un byte. No hay fragmentación. Contrasta con el banco de red, donde el mismo indicador cae de 34,804 a 16,372 B tras levantar WiFi porque AsyncTCP pide memoria por conexión — aquí no hay nada de eso.
+
+##### Las cifras de la etapa 2 caducaron con el driver de SD — remedidas 7-ago-2026
+
+La tabla de arriba se tomó con la librería `SD` de Arduino. El driver `sdspi` del
+IDF que la sustituyó pide bastante más heap, así que **para comparar contra el
+firmware de hoy hay que usar estos números**:
+
+| Punto de medida | Etapa 2 con `SD.h` | Etapa 2 con `sdspi` | Δ |
+|---|---|---|---|
+| Arranque (solo el LED) | 268,540 | **265,972** | −2,568 |
+| Justo antes de `autoConnect()` | 214,760 | **179,936** | **−34,824** |
+| Justo después | 213,608 | **178,776** | −34,832 |
+
+**El salto entero está entre las dos primeras filas, y tiene que ser así**: en la
+del arranque la tarjeta todavía no se ha montado —solo se paga el `.bss` de más—
+y los ~35 KB son lo que `esp_vfs_fat` + sdspi reservan al montar. La caída de
+2,568 B de la primera fila es `.bss`, no heap de trabajo.
+
+**`mayorBloque` sigue clavado en 110,580 B**, en las tres medidas y con el
+pipeline de fotos corriendo encima. El driver nuevo cuesta heap pero **no
+fragmenta**, que es lo que importaba: el margen sobre los 42 KB que el portal
+necesita sigue siendo de más de 130 KB.
 
 > **Un matiz que no se midió:** la etapa 2 corrió con credenciales ya guardadas, así que **no ejerció el portal**, solo la reconexión. Que el portal aguante bajo la presión de heap de la etapa 2 se infiere de restar los 42 KB medidos en la etapa 1 (quedarían ~172 KB), no está medido. Se cierra igualmente porque el margen es de un orden de magnitud; para medirlo habría que borrar credenciales con `env:wifi` (tecla `z`), flashear `env:marco` sin borrar la NVS y volver a provisionar desde el celular.
 >

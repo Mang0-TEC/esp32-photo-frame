@@ -14,7 +14,7 @@ static const LedRGB::Perfil TABLA[] = {
     {    0,   0, 255,     0,  false },  // WIFI_SETUP      — azul fijo: el portal espera
     {    0,   0, 255,   250,  false },  // WIFI_CONNECTING — más rápido que BOOT
     {    0, 255,   0,     0,  true  },  // WIFI_OK         — y «foto recibida»
-    {  255,   0,   0,  1000,  false },  // SD_ERROR        — ver nota abajo
+    {  255,   0,   0,  1000,  true  },  // SD_ERROR        — ver nota abajo
     {  255,   0,   0,   150,  true  },  // UPLOAD_ERROR
     {  255,  70,   0,   600,  true  },  // WARNING         — el 70 es MEDIDO, ver abajo
 };
@@ -32,11 +32,12 @@ static_assert(sizeof(TABLA) / sizeof(*TABLA) == (size_t)LedRGB::State::TOTAL,
 // original tiraba a verde, que es el peor fallo posible en esta fila: ámbar es
 // «subiendo» y rojo es «falló», y tienen que distinguirse de un vistazo.
 
-// ponytail: SD_ERROR es el único estado que no se apaga, y es una excepción con
-// fecha de caducidad. Hoy el display no existe y el LED es el único canal para
-// decir «no hay tarjeta»; un rojo permanente contradice la regla 3, pero un marco
-// sin tarjeta ya está roto de forma visible. En cuanto el firmware pinte ese
-// error en pantalla, esta fila pasa a autoOff = true como todas las demás.
+// SD_ERROR ERA el único estado que no se apagaba, y esa excepción venció: el
+// firmware ya pinta «No se pueden / leer las fotos» en el display
+// (pantallaMensaje() en main.cpp), así que el LED dejó de ser el único canal
+// capaz de decirlo y la fila pasa a autoOff como todas las demás. Un rojo
+// latiendo toda la noche en la sala es regla 3, y el mensaje en pantalla no se
+// va a ninguna parte cuando el LED se apaga a los 30 s.
 
 const LedRGB::Perfil& LedRGB::perfil(State s) {
     return TABLA[(uint8_t)s];

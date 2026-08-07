@@ -133,6 +133,96 @@ No se construye ninguna de las dos ahora: el recorrido solo ocurre cuando el
 índice falta, y con los recuentos reales el número ya es aceptable. Queda escrito
 para que la decisión no se retome desde cero.
 
+#### Cómo está construido el fallback — implementado y medido, 2026-08-07
+
+Vive en `reconstruirManifiesto()`, `firmware/src/main.cpp`, y va en **dos fases**
+para que el orden reconstruido sea el numérico **sin techo de fotos**.
+
+**Fase 1 — recorrer y volcar en crudo.** `openNextFile()` sobre `/fotos/`,
+`nombreValido()` por entrada, y cada nombre válido se escribe tal cual a
+`/manifest.raw`. **Cero RAM.** Es el paso caro y no cambia.
+
+**Fase 2 — ordenar por rangos, releyendo el crudo.** El nombre *es* el número, así
+que caben 4 B por foto. Se toma un bloque de `B` fotos y se recorre el crudo una
+vez por rango `[lo, lo+B)`, ordenando con `qsort` y anexando:
+
+- `B` sale **derivado del heap**, no fijado: la mitad del bloque contiguo mayor.
+  Medido en placa, **`B = 13,822` fotos**. La fracción es ½ y no ¼ porque esto
+  corre en el arranque y antes de `autoConnect()`, que es el momento con el heap
+  más vacío de toda la vida del firmware.
+- Con los recuentos reales de este documento —cientos, a lo sumo unos miles—
+  **`K = 1`** y la fase 2 *es* la ordenación en RAM de toda la vida. Eso importa:
+  significa que **la ruta normal se ejercita en cada prueba**, al revés que un
+  merge sort cuyo código de fusión solo correría por encima del techo.
+- **Verificado que `K > 1` da el mismo resultado**, con un binario desechable de
+  `B = 3`: **3 pasadas**, y el manifiesto resultante idéntico al de una sola.
+- Si el `malloc` falla, `rename(/manifest.raw → /manifest.txt)` y se avisa: el
+  marco arranca en orden de directorio en vez de quedarse sin índice. No es una
+  rama nueva — el archivo ya está escrito.
+
+**Coste con fotos reales**, 7 fotos más los 7 sidecars de macOS:
+
+| | |
+|---|---|
+| Recorrido | 63-87 ms → **4,500-6,214 µs/entrada** |
+| Ordenación | 39 ms con `K = 1`, 45 ms con `K = 3` |
+| Reanclaje del contador | `0 → 8`, y en el siguiente arranque `8 → 8` |
+
+**Ese rango de µs/entrada es ancho a propósito: con 14 entradas la cifra es
+ruidosa**, y las dos corridas difieren un 38 %. Ambas rodean los 4,763 µs
+medidos con 100 archivos sintéticos, así que la extrapolación de la tabla de
+arriba se sostiene, pero **no se debe citar un valor único** de esta medición.
+
+**La ordenación cuesta 39 ms con 7 fotos, o sea el 45 % del recorrido, y eso NO
+contradice que sea barata**: a ese recuento la fase 2 está dominada por costes
+fijos —abrir el crudo, escribir el temporal, el `remove` y el `rename`, cada uno
+una actualización de directorio en la tarjeta— y no por el `qsort`, que sobre
+1,000 elementos son 1-2 ms. Las 2 pasadas extra del binario de `B = 3` costaron
+6 ms sobre un archivo de 91 B. Con miles de fotos el recorrido crece y la
+ordenación no, así que su peso relativo cae.
+
+**El escrito va a `/manifest.tmp` y se renombra al final, con el crudo intacto
+hasta entonces.** Un corte de luz a media escritura dejaría si no un índice
+truncado que **parece válido** —sus entradas existen— y el fallback no volvería a
+dispararse nunca. `f_rename` de FatFs falla si el destino existe, de ahí el
+`remove` previo. Verificado en placa que tras reconstruir **no quedan
+`/manifest.raw` ni `/manifest.tmp`** en la raíz.
+
+#### El índice roto, ejercitado en placa
+
+No hace falta que el manifiesto esté corrupto para que apunte a nada: basta con
+borrar fotos. **Medido con 5 de 7 entradas muertas** —el manifiesto seguía
+nombrando siete y solo existían dos archivos—: el firmware registra cada entrada
+muerta, sigue a la siguiente y pinta las dos vivas alternándolas. **Ni un solo
+frame en negro, ni un mensaje de error en pantalla.** Es la regla 2 en el caso
+que la motiva.
+
+**No reconstruye mientras haya algo pintable**, y eso es deliberado: `showNextPhoto()`
+se salta hasta `SALTOS_MAX = 8` entradas antes de dar el índice por roto. El
+manifiesto se queda temporalmente desfasado —cuesta un `getFsJpgSize` fallido por
+entrada muerta, del orden de 16 ms— a cambio de no pagar un recorrido de
+directorio entero por una foto que alguien borró a mano.
+
+> Ese 8 no promete encontrar la foto viva: con un manifiesto largo y casi todo
+> muerto, se agota y reconstruye. **Eso no es un fallo, es la otra mitad del
+> mecanismo** — la reconstrucción reescribe el índice desde `/fotos/` y después
+> todas las entradas existen. El umbral solo decide cuál de los dos caminos se
+> paga, y los dos acaban con el marco pintando.
+
+> **macOS deja un `._NNNNNNNN.JPG` por cada foto DENTRO de `/fotos/`**, y esto no
+> estaba anotado: son sidecars AppleDouble de 4 KB que aparecen al copiar desde
+> la Mac, que es como se cargan las fotos mientras `/upload` no exista.
+> `nombreValido()` los rechaza por longitud —15 ≠ 12— y el recorrido los cuenta
+> como descartados: **7 válidas, 7 descartadas** en la medición de arriba. O sea
+> que el guard contra `?n=../manifest.txt` resultó cubrir también la basura real
+> del sistema de archivos, sin haberlo buscado.
+>
+> Y **`.metadata_never_index` NO evita `.fseventsd`**, contra lo que afirma el
+> BOM: en la tarjeta preparada hay `.fseventsd` en la raíz y no hay
+> `.Spotlight-V100`. Son dos mecanismos distintos y el archivo solo apaga el
+> indexado de Spotlight. No cambia ninguna decisión —las fotos no van en la raíz
+> justamente por esto— pero la afirmación estaba de más.
+
 ---
 
 ## 4. Carga de fotos
@@ -425,6 +515,16 @@ subida que recibe `503` se reintenta igual que una que falló por red.
 
 **`/list` devuelve el manifiesto crudo**, con `request->send(SD, "/manifest.txt", "text/plain")`. Es streaming directo desde la tarjeta: cero heap, cero parser en ambos extremos, y el JavaScript hace `split('\n')`. Devolver JSON obligaría al ESP32 a construir la cadena completa en memoria, que es justo lo que el formato del manifiesto (§3) busca evitar.
 
+> **Un manifiesto VACÍO hay que atajarlo a mano, y `exists()` no basta.** Medido
+> en placa: con un `/manifest.txt` de 0 B —tarjeta sin fotos, que es un estado
+> legítimo— `ESPAsyncWebServer` responde **`500 Invalid data in handler`** en vez
+> de un cuerpo vacío. El mecanismo está en `WebResponses.cpp:727`, donde
+> `AsyncFileResponse` decide si el archivo sirve con `if (!_content.available())`:
+> **un archivo válido pero vacío da 0 y es indistinguible de uno que falta**, así
+> que se va a buscar el `.gz`, tampoco lo encuentra, y pone un 404 sobre una
+> respuesta que el request layer ya juzga inválida. La salida es comprobar
+> `size() == 0` y mandar un `200` con cuerpo vacío.
+
 **Validación obligatoria en `/photo` y `/delete`:** el nombre recibido debe cumplir `^[0-9]{8}\.JPG$` exacto, no basta con concatenarlo a `/fotos/`. Sin esa comprobación, `?n=../manifest.txt` sale del directorio. El esquema rígido de nombres (§3) hace que la validación cueste tres líneas y elimine la clase entera de problema.
 
 **El upload nunca escribe a la SD desde su callback.** Corre en el hilo `async_tcp` a prioridad 10, y bloquearlo con I/O de tarjeta provoca watchdog. Se acumula en heap y se escribe una sola vez al terminar, con tope duro de 64 KB. Detalle completo en el BOM.
@@ -715,17 +815,69 @@ Si las barras se metieran al archivo, cambiar de estrategia después obligaría 
 
 ### Decodificación
 
-`TFT_eSPI` (Bodmer) + `TJpg_Decoder`. Trabaja en bloques MCU de 16×16 empujados directo por SPI.
+`TFT_eSPI` (Bodmer) + `TJpg_Decoder`. Trabaja en bloques MCU de 16×16 empujados directo por SPI. **Por esto no hace falta un ESP32-S3**: nunca se arma el framebuffer completo de 300 KB.
 
-Consumo real ≈ buffer del JPEG (12-32 KB según el tamaño de salida, ver §4; 64 KB en el tope duro) + ~4 KB de workspace. **Por esto no hace falta un ESP32-S3**: nunca se arma el framebuffer completo de 300 KB.
+#### La RAM del decodificador: 3,580 B fijos y CERO heap — corrección, 2026-08-07
 
-#### Cuánto tarda en pintarse una foto — medido
+Este documento decía «buffer del JPEG (12-32 KB según el tamaño de salida; 64 KB en el tope duro) + ~4 KB de workspace», y **eso describe el camino desde un array en memoria, no el camino desde archivo, que es el que usa el marco.**
 
-A los **40 MHz** que fijó el pendiente #3, empujar una pantalla completa en bloques MCU de 16×16 —que es exactamente lo que hace `TJpg_Decoder`— cuesta **77 ms**. Medido en placa desde `firmware/banco/` `[env:display]`, sin la decodificación JPEG encima.
+`TJpgDec.drawFsJpg(x, y, ruta, fs)` **no bufferea el JPEG**: `jd_prepare` recibe el `workspace` estático de la librería y `jd_input` va pidiendo el archivo en trozos de `JD_SZBUF = 512 B` a medida que los necesita (`TJpg_Decoder.cpp:283`). Con `JD_FASTDECODE = 1`, ese workspace son `TJPGD_WORKSPACE_SIZE = 3500 B`.
 
-De esos 77 ms, **62 son el bus y 15 son sobrecarga por bloque**: 600 `pushImage` por pantalla, cada uno con su `setWindow` y su ciclo de CS, a ~23 µs. Esa parte **no baja al subir la frecuencia** —se midió constante a 27, 40 y 80 MHz— y es la razón por la que correr el SPI más rápido rinde cada vez menos.
+Medido en el binario y en placa, no deducido:
 
-Para lo que este proyecto hace, la cifra es holgada: el marco cambia de foto cada varios segundos, así que 77 ms de repintado no se perciben, y ni siquiera los 108 de 27 MHz lo harían. **La velocidad del SPI no es una restricción de este diseño.** Cifras completas de las tres frecuencias en el BOM.
+| | |
+|---|---|
+| Símbolo `TJpgDec` en `.bss` | **3,580 B** (`nm`: `3ffc3f60 00000dfc B TJpgDec`) |
+| Heap durante la decodificación | **+0 B**, en las siete fotos y en las dos vueltas del ciclo |
+| Coste de enlazar la librería | **ya estaba pagado**: el binario con `TJpg_Decoder` incluido y **cero llamadas** ya cargaba los mismos 3,580 B. Comprobado recompilando `HEAD` |
+| Coste de añadir el pipeline entero | **+64 B de RAM** y **+13.3 KB de flash** |
+
+O sea que la cifra que hay que citar es **3,580 B fijos**, no un buffer que crece con la foto, y el tope duro de 64 KB de §4 **no tiene nada que ver con la visualización** — es del camino de subida.
+
+#### Cuánto tarda en aparecer una foto — medido en placa, 2026-08-07
+
+Con el pipeline real: leer de la tarjeta, decodificar y empujar al ST7796S a 40 MHz. Siete fotos de proporciones distintas, `[env:marco]`.
+
+| Entrada | Salida | Esc. | `getFsJpgSize` | Dibujo | del que empuje | **Total** |
+|---|---|---|---|---|---|---|
+| 320×480 | 320×480 | 1 | 17 ms | 230 ms | 80.7 ms | **247 ms** |
+| 320×427 | 320×427 | 1 | 17 | 213 | 71.7 | 230 |
+| 270×480 | 270×480 | 1 | 16 | 199 | 67.8 | 215 |
+| 221×480 | 221×480 | 1 | 18 | 171 | 55.8 | 189 |
+| 320×240 | 320×240 | 1 | 16 | 127 | 40.6 | 143 |
+| 320×213 | 320×213 | 1 | 18 | 125 | 35.8 | 143 |
+| 1280×960 | 320×240 | **4** | 18 | 1137 | 131.6 | **1155** |
+
+**Los tres términos, separados.** El empuje se mide exactamente porque el callback *es* el empuje. Separar lectura de decodificación exige quitar la lectura de en medio —`drawFsJpg` las entrelaza—, así que la primera foto de cada arranque se dibuja desde un buffer:
+
+| Término, sobre la 320×480 de 13,326 B | |
+|---|---|
+| Leer de la SD | **13 ms** |
+| **Decodificar** | **121 ms** |
+| Empujar al display | **76.9 ms** |
+
+**La decodificación es el término mayor, y nunca se había medido.** Es el 57 % del total, contra un 36 % del empuje y un 6 % de la lectura. El cuello del pipeline de visualización **no es el SPI ni la tarjeta: es la CPU**. Eso refuerza la decisión del pendiente #3 —40 MHz y no 80— desde otro ángulo: subir el reloj del display atacaba el segundo término, y el primero no se movía.
+
+**El empuje confirma el banco con 0.1 ms de error.** Los 77 ms sintéticos de 600 bloques de 16×16 del pendiente #3 predijeron los 76.9 ms reales. Y sobre las siete fotos el término escala **exactamente con los píxeles de salida**, a `0.525 µs/píxel` en las seis proporciones (±0.4 %).
+
+> Sesgo declarado: en la tabla de arriba el empuje sale a 80.7 ms y no a 76.9 porque son dos corridas distintas y porque la instrumentación cobra lo suyo — dos `micros()` por bloque × 600 bloques ≈ 3.7 ms, que es justo la diferencia. La cifra sin instrumentar es la del banco.
+
+**El barrido de la imagen al cambiar de foto NO es un síntoma.** Se ve la foto pintándose bloque a bloque, y es inevitable por construcción: `TJpg_Decoder` entrega MCUs de 16×16 y no hay framebuffer donde componer la imagen antes de mostrarla — **no tenerlo es exactamente lo que descartó la ESP32-S3**. Son los ~230 ms de la tabla hechos visibles. Es el mismo caso que el barrido de `drawFastVLine` que anota el BOM, y hay que dejarlo escrito porque es lo primero que alguien va a reportar como avería.
+
+**La rama de escala es cara, y el motivo no es obvio.** Una foto sobredimensionada cuesta **1,155 ms**, 4.7× una que llena la pantalla, y su empuje *sube* a 131.6 ms pese a salir en 320×240 —la mitad de píxeles que la de 320×480, que empuja en 80.7—. La razón es que **la rejilla de bloques la fija el MCU de ORIGEN, no el destino**: con `scale = 4` los bloques que entrega el decodificador son de 4×4 de salida, así que son 4,800 en vez de 600, y a los ~23 µs de sobrecarga por bloque ya medidos salen ~110 ms. El resto es la decodificación, que también va con los píxeles de origen: 8× más píxeles de entrada, 6.7× más tiempo.
+
+No es un problema: las fotos del navegador nunca llegan sobredimensionadas, y esa rama existe solo para que un archivo arrastrado a mano a `/fotos/` se vea entero en vez de por una esquina (regla 2). Pero explica por qué **no** conviene subir fotos grandes «por si acaso».
+
+**Streaming contra bufferizado, la misma foto por los dos caminos:**
+
+| `00000001.JPG`, 320×480, 13,326 B | Leer | Decodificar | Empujar | Total |
+|---|---|---|---|---|
+| Bufferizado (`drawJpg` desde heap) | 13 ms | 121 ms | 76.9 ms | **210 ms** |
+| **Streaming (`drawFsJpg`) — producción** | 149.3 ms los dos juntos | | 80.7 ms | **230 ms** |
+
+Streaming cuesta **+20 ms, un 9.5 %**, y el exceso está entero en la lectura: 26 peticiones de 512 B contra una sola de 13 KB. **Se queda el streaming**, porque esos 20 ms son invisibles cada 30 s y a cambio el camino de visualización no toca el heap — que es donde `/upload` va a querer sus 64 KB.
+
+Cifras de las tres frecuencias de SPI, en el BOM. **La velocidad del SPI no es una restricción de este diseño.**
 
 ### Sobre el ejemplo oficial `ESP32_SDcard_jpeg`
 
@@ -853,10 +1005,24 @@ escribió, una subida fallida dejaba el rojo latiendo a 150 ms toda la noche: lo
 estados con parpadeo llevaban su bandera de auto-off puesta y no la alcanzaban
 nunca. Es la regla 3 entera, perdida por el orden de dos bloques.
 
-**La única excepción es «sin tarjeta», y tiene fecha de caducidad.** Hoy el
-display todavía no existe y el LED es el único canal capaz de decirlo; un marco
-sin tarjeta además ya está visiblemente roto. En cuanto el firmware sepa pintar
-ese error en pantalla, esa fila pasa a apagarse como todas las demás.
+**La excepción de «sin tarjeta» VENCIÓ, 2026-08-07: ya no hay ninguna fila que se
+quede encendida.** Era la única, y su fecha de caducidad estaba escrita aquí —«en
+cuanto el firmware sepa pintar ese error en pantalla»—. El firmware ya lo pinta:
+`pantallaMensaje()` de `main.cpp` deja **«No se pueden / leer las fotos»** en el
+display, así que el LED dejó de ser el único canal capaz de decirlo y `SD_ERROR`
+pasa a `autoOff = true` como las demás. El mensaje no se va a ninguna parte
+cuando el LED se apaga a los 30 s, que es justo lo que faltaba para que el rojo
+permanente dejara de ser necesario.
+
+**Verificado en placa arrancando sin tarjeta**: sale el texto en pantalla, el LED
+late en rojo, y se apaga solo. Lo que queda dicho es lo que hay que decir, y por
+el canal que no se apaga.
+
+> Las cadenas de esas pantallas van **sin acentos a propósito**, y lleva
+> comentario en el código: la fuente 4 de TFT_eSPI cubre ASCII 32-126 y nada más,
+> y las suaves (`SMOOTH_FONT`) necesitan un `.vlw` en un sistema de archivos que
+> este proyecto no tiene. «Todavía» saldría con un glifo roto, que se ve peor que
+> la falta del acento.
 
 ### El fade interpola desde un origen congelado
 
@@ -993,4 +1159,18 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
     paso salió que **la librería `SD` de Arduino no monta estas tarjetas** y hubo
     que cambiarla por el driver `sdspi` del IDF; el diagnóstico completo, con su
     control experimental, está en el BOM.
-14. Integración y modelado de la carcasa.
+14. **Pipeline de visualización.** **Hecho, 7-ago-2026.** El marco muestra fotos:
+    manifiesto con su fallback de reconstrucción y reanclaje del contador,
+    `showNextPhoto()` decodificando con `TJpg_Decoder` por bloques MCU con las
+    barras negras calculadas en firmware, y cambio periódico cada 30 s. Una foto
+    que llena la pantalla aparece en **247 ms**, de los que la **decodificación
+    es el 57 %** —el término que faltaba por medir, y el mayor—, con **cero
+    heap**. Verificado de vista en las seis proporciones de §6 más una
+    sobredimensionada. De paso venció la deuda de §9: `SD_ERROR` ya se apaga
+    sola. Cifras en §3 y §6.
+
+    **Falta de esta pieza**: el toque corto no se ha podido probar —depende del
+    pad capacitivo, que todavía no existe (§8)— y la histéresis del brillo sigue
+    marcada como `TODO`, esperando al BH1750 de reposición.
+
+15. Integración y modelado de la carcasa.

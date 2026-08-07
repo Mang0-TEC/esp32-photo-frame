@@ -144,7 +144,11 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 - **En el lector SD, deja el pin `3.3V` sin conectar.** Solo se usa `+5`.
 - **BH1750 va a 3.3 V.** Consume microamperes; así las líneas I2C quedan al nivel lógico del ESP32.
 - **El capacitor de 100 µF no es opcional.** Entre 5 V y GND, lo más cerca posible del lector SD. Sin él, los picos de escritura hunden el riel y resetean el ESP32 — falla intermitente y difícil de diagnosticar con la carcasa cerrada.
-- Un capacitor de 100 nF en VCC-GND de cada módulo (display, SD, BH1750).
+- Un capacitor de 100 nF en VCC-GND de cada módulo: **display, lector SD y BH1750**. Son los tres cerámicos «104» de la tabla B.
+
+> **El lector SD lleva LOS DOS, y no son redundantes** — es la duda que surge al leer las dos líneas de arriba seguidas. Cubren bandas de frecuencia distintas: el **electrolítico de 100 µF** es reserva de carga para las ráfagas de escritura (decenas de mA durante decenas de ms) y su ESR y ESL lo incapacitan para responder a un flanco de nanosegundos; el **cerámico de 100 nF** es desacoplo de alta frecuencia para los flancos del SPI y la lógica de la tarjeta, y no almacena nada útil a escala de milisegundos. Con solo el electrolítico el riel queda sucio en alta frecuencia; con solo el cerámico se hunde en cada escritura.
+>
+> **El cerámico va más cerca que el electrolítico**, lo más pegado posible a los pines `+5` y `GND` del módulo: el lazo corto es lo que lo hace funcionar. El electrolítico puede quedar un poco más atrás.
 
 ### Backlight — determinar el tipo de pin `BL` antes de soldar
 
@@ -290,11 +294,52 @@ El H95 **no trae buffer 74LVC125** (sus R1-R4 marcados "101" son solo 100 Ω de 
 **Confirmación externa:** [TFT_eSPI issue #3601](https://github.com/Bodmer/TFT_eSPI/issues/3601). El ejemplo oficial `ESP32_SDcard_jpeg` falla cuando TFT_eSPI y la librería `SD` terminan en buses distintos sin declararlo explícitamente. La solución del reportante es exactamente la arquitectura de aquí: instanciar `SPIClass hspi(HSPI)` con pines dedicados y pasarlo a `SD.begin(CS, hspi)`. Cita textual del hilo: le tomó dos días encontrarlo. Vale tenerlo referenciado para no reabrir la decisión más adelante.
 
 ```cpp
-SPIClass hspi(HSPI);
-hspi.begin(14 /*SCK*/, 27 /*MISO*/, 13 /*MOSI*/, 26 /*CS*/);
-if (!SD.begin(26, hspi)) { /* LED rojo */ }
+montarTarjeta(14 /*SCK*/, 27 /*MISO*/, 13 /*MOSI*/, 26 /*CS*/, 20000000);  // src/tarjeta.h
 tft.begin();   // VSPI, por defecto
 ```
+
+> El montaje ya **no** es `SPIClass hspi(HSPI)` + `SD.begin(26, hspi)` como decía
+> este bloque antes: la librería `SD` de Arduino no monta las tarjetas de este
+> proyecto y se sustituyó por el driver sdspi del IDF. El porqué, medido, está
+> más abajo en «La librería `SD` de Arduino no se usa». El reparto de buses no
+> cambia: SPI2 (HSPI) para la tarjeta, SPI3 (VSPI) para el display.
+
+#### Coexistencia verificada en placa, 2026-08-07 — el #3601 NO se manifiesta
+
+189 segundos sostenidos, con una tarea de FreeRTOS anclada al **core 0**
+escribiendo, releyendo y comparando 32 KB contra la tarjeta mientras `loop()`
+pintaba en el **core 1**. Concurrente y no alternado a propósito: es lo que hace
+producción, porque la escritura ocurre en el callback de `/upload` (hilo
+`async_tcp`, prioridad 10) mientras `loop()` puede estar empujando píxeles.
+
+| | Corrida 1 | Corrida 2 |
+|---|---|---|
+| Duración | 189.2 s | 185.9 s |
+| Ciclos de SD | 401 escribir+releer+comparar de 32 KB | 394 |
+| **Discrepancias** | **0** — cero fallos de escritura y de lectura | **0** |
+| Pasadas de display | 1,277 | 1,253 |
+| Rayas de 1 px, media / máx | 68.6 / 70 ms — línea base **67** | 68.6 / 70 |
+| Bloques 16×16, media / máx | 79.2 / 84 ms — línea base **77** | 79.2 / 84 |
+
+**Son dos corridas y no una, y las medias salen idénticas al decimal.** Entre
+ambas, **795 ciclos y ~52 MB verificados byte a byte sin una sola discrepancia**.
+La degradación del display es de +2.4 % en las rayas y +2.9 % en los bloques.
+
+**El veredicto es asimétrico y conviene saberlo al leerlo:** el lado de la SD se
+autoverifica byte a byte con la relectura, pero el display **no se puede leer de
+vuelta** (`TFT_MISO=-1`, `SDA-0` sin conectar), así que el suyo es visual.
+Comprobado de vista durante la corrida: **sin bandas, sin píxeles corridos y sin
+rayas que cambien de fase**.
+
+> Se ve **el barrido** de las líneas avanzando por la pantalla, y eso NO es un
+> síntoma: `drawFastVLine` pinta las 320 columnas de una en una y la pasada dura
+> 68 ms, así que el dibujado es visible. Anotado porque es justo lo que alguien
+> va a reportar como «se ve raro».
+
+**El coste de la contención lo paga la SD, no el display.** Su escritura media
+sube de 67 ms a **435 ms** durante la prueba, mientras el display pierde un 3 %.
+Tiene sentido: `loop()` acapara CPU y la tarea de la tarjeta cede en cada vuelta.
+Para el marco es el reparto correcto — lo que no puede tartamudear es la imagen.
 
 ### Touch capacitivo
 
@@ -420,6 +465,107 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
 ```
 
 **Las siete versiones ya están pineadas** — las de arriba son las que resolvieron en el primer build limpio y las que están en el `platformio.ini` real. No usar `latest` en ninguna: cambia el comportamiento bajo los pies. Al actualizar cualquiera, actualizar también este bloque.
+
+### La librería `SD` de Arduino NO se usa — 2026-08-07
+
+**No monta las tarjetas de este proyecto.** Medido en placa desde
+`firmware/banco/`, `[env:display]`, con **dos tarjetas distintas** (series de CID
+`0x74161376` y `0x73F1513E`):
+
+```
+[W] ff_sd_initialize(): READ_OCR failed: 0
+[E] sdcard_mount(): f_mount failed: (3) The physical drive cannot work
+```
+
+#### El mecanismo, medido y no deducido
+
+`sd_diskio.cpp` manda **CMD59 (`CRC_ON_OFF`) con argumento 1 de forma
+incondicional** (línea 542) y después exige un OCR con el bit 20 puesto de un
+**CMD58 hecho todavía en estado idle** (línea 565). Rehaciendo la secuencia a
+mano sobre los mismos pines, a 400 kHz, con el CRC7 calculado de verdad:
+
+| CMD59 | OCR del primer CMD58, en idle | |
+|---|---|---|
+| ninguno | `0x40FF8000` | ✓ |
+| argumento **0** — CRC OFF | `0x40FF8000` | ✓ ← **el control** |
+| argumento **1** — CRC ON | `0x00000000` | ✗ ← lo que hace el driver |
+
+**El control es lo que lo cierra.** Manda el mismo número de comandos que la ruta
+que falla, así que la variable es el estado del CRC y no el tiempo ni un comando
+de más. Dos observaciones que lo rematan:
+
+- **Los cuatro ceros no son un OCR vacío.** En SPI una tarjeta ocupada mantiene
+  `DO` en bajo, o sea que está contestando **«ocupada»** a ese CMD58 concreto.
+- **El mismo CMD58 después de ACMD41 devuelve `0xC0FF8000` correcto**, con el CRC
+  igual de encendido. No es que la tarjeta no sepa contestarlo: es esa ventana.
+
+R1 vuelve `0x01` sin el bit de error de CRC, así que **no** es un CRC mal
+calculado por el driver.
+
+#### Por qué no se puede esquivar, y por qué no basta con cambiar de tarjeta
+
+- CMD59 es incondicional y `supports_crc` arranca en `true` (línea 776): no hay
+  hueco desde el código del proyecto.
+- **El master de arduino-esp32 tiene el mismo código** — comprobado, no supuesto.
+  No hay arreglo río arriba ni versión a la que subir.
+- Las dos tarjetas son **distintas** por número de serie pero de la misma familia
+  (fabricante `0x1B`, modelo `00000`). Un PNM en ceros es firma habitual de
+  tarjeta clonada o re-etiquetada — **inferencia, no medición**. Una tarjeta de
+  marca podría montar con el driver de siempre; no se probó y no hace falta.
+
+#### Lo que se usa en su lugar: el driver sdspi de ESP-IDF
+
+Vive en **`firmware/src/tarjeta.h`**, compartido por el marco y el banco igual
+que `nombre.h`. **No es una dependencia nueva**: el IDF ya viene en la
+plataforma. La clave es una línea:
+
+```cpp
+host.flags |= SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC;   // salta el CMD59
+```
+
+El header del IDF lo dice literal: *«SPI mode only: Do not enable CRC
+verification (skip CMD59)»* (`sd_protocol_types.h:213`). Ese paso es
+**condicional** ahí, y en el de Arduino no.
+
+**El montaje se envuelve en un `fs::FS` sobre `VFSImpl`**, que es exactamente lo
+que hace la librería `SD` por dentro (`SD.cpp`: `SDFS SD = SDFS(FSImplPtr(new
+VFSImpl()))`). Con eso `File`, `open()`, `exists()` y sobre todo el
+`request->send(fs, "/manifest.txt", "text/plain")` de ESPAsyncWebServer —el
+streaming sin heap de §3— **siguen siendo el mismo código**. Era el argumento que
+descartaba a SdFat, que no es un `fs::FS` y habría obligado a reescribir el
+streaming con respuesta por trozos.
+
+**Coste medido:** `[env:marco]` pasa de 56,004 a **56,744 B de RAM** y de
+1,232,933 a **1,274,699 B de flash** (+740 B y +41.8 KB). Es lo que pesa
+`esp_vfs_fat` + sdspi frente al `sd_diskio` hecho a mano de Arduino.
+
+**`format_if_mount_failed` se queda en `false` a propósito.** Formatear sola la
+tarjeta ante un montaje fallido borraría las fotos, que es el único sitio donde
+viven. Un fallo de montaje se reporta, no se «arregla».
+
+#### La pega, y es real: dos dueños incompatibles del mismo bus
+
+El `SPIClass` de Arduino arranca SPI2 con `spiStartBus` de `esp32-hal-spi`; el
+driver del IDF lo arranca con `spi_bus_initialize`. **No pueden estar activos a
+la vez.** El banco necesita los dos —las sondas de comandos crudos son de
+Arduino— así que se turnan explícitamente con `tomarBusArduino()` y
+`soltarBusArduino()`, y **las sondas desmontan la tarjeta**: después hay que
+volver a montar con la tecla `M`. El marco solo usa el del IDF y no tiene reparto.
+
+> **La trampa vieja del orden `hspi.begin()` antes de `SD.begin()` deja de
+> aplicar al marco**, pero sigue valiendo para las sondas del banco y no se
+> borra: `SDFS::begin()` llama a `spi.begin()` **sin argumentos** (`SD.cpp:34`), y
+> `SPIClass::begin()` con todo por defecto sobre un HSPI sin inicializar asigna
+> `sck=14, miso=12, mosi=13, ss=15` (`SPI.cpp:93-97`) — o sea que pone MISO en
+> **GPIO12**, el pin de strapping prohibido, él solo, y la placa deja de bootear.
+
+#### El banco compila con `CORE_DEBUG_LEVEL=3`
+
+`[env:display]` lo lleva en `build_flags`. Por defecto PlatformIO compila en
+nivel ERROR y toda la secuencia de init de la SD reporta sus fallos con `log_w`:
+sin ese flag, un CMD8 o un ACMD41 que fallan se ven como un único `f_mount
+failed: (3)` que no dice en qué paso fue. Fue lo que convirtió «no monta» en una
+línea con número. **No va en `[env:marco]`.**
 
 ### El banco de red duplica tres de estas versiones a mano
 
@@ -632,6 +778,58 @@ La tarjeta física ya se preparó y se midió, no solo se asumió de la ficha:
 
 1. **No poner las fotos en la raíz.** No es por un límite de entradas: el famoso tope de 512 entradas en el directorio raíz es de **FAT16**, no de FAT32 — en FAT32 la raíz es una cadena de clusters ordinaria y crece igual que cualquier subdirectorio. Las razones reales son otras: macOS deja metadatos en la raíz del volumen (`.Spotlight-V100`, `.fseventsd`, `.Trashes`) que el firmware tendría que filtrar en cada recorrido, y conviene separar las fotos de `/manifest.txt` y de cualquier otro archivo de servicio. Las fotos van en `/fotos/`.
 2. **Archivo manifiesto.** Recorrer el directorio en cada cambio de foto se vuelve lento con miles de archivos. Mantener un índice que el ESP32 lee al arrancar y actualiza solo al subir o borrar. Formato y fallback en §3 de la especificación funcional.
+
+### Rendimiento de la tarjeta — medido en placa, 2026-08-07
+
+Todo con archivos de **32,768 B**, que es el peso de una foto que llena la
+pantalla y además un cluster exacto. Desde `[env:display]`, tecla `w`, 10
+muestras por frecuencia. El **cluster de 32,768 B quedó confirmado desde el
+ESP32** midiéndolo por consumo —un archivo de 1 byte y el delta de espacio
+usado—, y coincide con lo que dio Windows.
+
+| Reloj | Escritura min / mediana / **máx** | Lectura | MB/s de lectura |
+|---|---|---|---|
+| 4 MHz (el default de la librería) | 116 / 130 / 131 ms | 83 ms | 0.39 |
+| 10 MHz | 69 / 83 / **464** ms | 42 ms | 0.78 |
+| **20 MHz** | **55 / 67 / 67 ms** | **27 ms** | **1.21** |
+| 25 MHz (tope de la especificación) | 51 / 64 / **265** ms | 24 ms | 1.37 |
+
+**La lectura escala con el reloj; la escritura satura en ~0.5 MB/s.** De 4 a 25
+MHz son 6.25× de reloj y solo 2× de escritura: el cuello es el tiempo de
+programación interno de la tarjeta, no el bus. Por eso **se elige 20 MHz** — da
+el 88 % de la lectura de 25 dejando margen bajo el tope de la especificación, que
+es el mismo criterio con el que se eligieron los 40 MHz del display.
+
+#### Dos números que no se ven en esa tabla y que importan más
+
+**Crear un archivo nuevo cuesta 241 ms de media, no 67.** Medido creando 100
+archivos seguidos a 20 MHz: 24,137 ms en total. La tabla de arriba reescribe
+**el mismo** archivo, así que no paga asignar clusters ni actualizar el
+directorio y la FAT. El número de la subida de una foto es el de 241 ms.
+
+**El peor caso es medio segundo, no «decenas de milisegundos».** Los 464 ms de la
+fila de 10 MHz son un borrado previo de bloque, y aparecen de forma esporádica:
+salieron a 10 y a 25 MHz pero no a 20, en corridas de 10 muestras. Con tan pocas
+muestras la cola está submuestreada y **no se debe tomar 464 ms como cota**, del
+mismo modo que el peor caso de peso de JPEG de §4 no se usa como cota.
+
+> **Consecuencia para el timeout por foto de §4, que estaba puesto a ojo:** los
+> `TIMEOUT_MS: 10000` de `web/index.html` quedan **confirmados con margen**. El
+> peor caso observado —464 ms de escritura más los 315 ms/foto ya medidos del
+> iPhone contra el banco— son ~800 ms, o sea **12× de margen**. No hay que
+> cambiar el valor, pero ahora tiene base medida en vez de una estimación.
+
+#### Recorrer el directorio: 4,763 µs por entrada
+
+100 archivos recorridos con `openNextFile()` en **476.3 ms**. Es el número que
+decide la viabilidad del fallback de reconstrucción del manifiesto de §3, y
+extrapolado a las 121,000 fotos de capacidad da **9.6 minutos**. Detalle y
+consecuencias en §3 de la especificación funcional.
+
+`openNextFile()` **abre** cada archivo, no solo lee su entrada de directorio, y
+ahí está buena parte del coste. Si algún día ese número estorba, la salida es
+`readdir()` sobre el VFS, que no abre nada — no se hace hoy porque el recorrido
+solo ocurre cuando el manifiesto falta.
 
 ### BH1750
 

@@ -17,6 +17,7 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 
+#include "nombre.h"   // compartido con el marco: ver ese archivo
 #include "wifi_credentials.h"
 
 #ifdef BANCO_CORS
@@ -70,26 +71,17 @@ static inline uint32_t mayorBloque() {
   return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
 }
 
-// ^[0-9]{8}\.JPG$ exacto. Sin esta comprobación, ?n=../manifest.txt sale del
-// directorio en el firmware real. El esquema rígido de nombres la abarata a
-// cuatro líneas, y aquí se prueba aunque no haya tarjeta que proteger.
-static bool nombreValido(const char *s) {
-  if (!s || strlen(s) != 12) return false;
-  for (int i = 0; i < 8; i++)
-    if (s[i] < '0' || s[i] > '9') return false;
-  return strcmp(s + 8, ".JPG") == 0;
-}
-
 // Corre en cada arranque. nombreValido es el guard contra ?n=../manifest.txt y
 // es la única lógica de este sketch que se puede comprobar sin red ni tarjeta;
 // si alguien la "simplifica", el banco lo grita antes de levantar el servidor.
+//
+// La función y su juego de casos viven en ../../src/nombre.h, compartidos con el
+// marco y con el banco del display. Es la excepción a la copia manual de este
+// proyecto, igual que tft_comun.ini: una versión de librería divergente se
+// detecta, pero una validación divergente no se nota hasta que alguien se sale
+// del directorio. Las dos copias que hubo YA habían divergido.
 static void autocomprobar() {
-  static const char *malos[] = {"../manifest.txt", "1.JPG",        "00000001.jpg", "000000001.JPG",
-                                "0000001.JPG",     "0000000a.JPG", "00000001.JPGX", "00000001.JP"};
-  bool ok = nombreValido("00000001.JPG") && nombreValido("99999999.JPG");
-  for (auto m : malos) ok &= !nombreValido(m);
-  ok &= !nombreValido(nullptr);
-  Serial.printf("[autocomprobacion] nombreValido: %s\n", ok ? "ok" : "*** FALLA ***");
+  Serial.printf("[autocomprobacion] nombreValido: %s\n", nombreValidoOk() ? "ok" : "*** FALLA ***");
 }
 
 static void liberarHeap() {

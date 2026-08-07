@@ -6,7 +6,6 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <SD.h>
 #include <Wire.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
@@ -16,6 +15,8 @@
 #include <qrcode.h>
 #include <esp_heap_caps.h>
 #include "LedRGB.h"
+#include "nombre.h"
+#include "tarjeta.h"   // la SD por sdspi del IDF; ahí está por qué NO se usa SD.h
 
 // ============================================================================
 // Pines (BOM-marco-fotos-esp32.md, Mapa de GPIOs)
@@ -35,7 +36,6 @@ constexpr uint8_t PIN_SD_CS   = 26;
 // Periféricos
 // ============================================================================
 TFT_eSPI tft = TFT_eSPI();
-SPIClass hspi(HSPI);                // HSPI dedicado a SD (VSPI va al display)
 BH1750 lux;
 AsyncWebServer server(80);
 LedRGB led(PIN_LED_R, PIN_LED_G, PIN_LED_B);
@@ -83,27 +83,15 @@ static void drawSetupQR();
 static void drawUsageQR();
 
 // ============================================================================
-// Validación de nombres — ^[0-9]{8}\.JPG$ exacto (§4)
+// Autocomprobación de arranque
 //
-// Copiada de firmware/banco/src/banco.cpp, donde ya corre con su autocomprobación
-// desde el banco de red. Sin esto, ?n=../manifest.txt sale de /fotos/ — y una
-// comprobación laxa del tipo «mide 12 y termina en .JPG» deja pasar ../../aa.JPG,
-// que cumple las dos cosas. El esquema rígido de nombres de §3 es lo que abarata
-// la validación correcta a cuatro líneas.
+// nombreValido() y su juego de casos viven en src/nombre.h, compartidos con el
+// banco de red y el del display. NO es copia manual: es el guard contra
+// ?n=../manifest.txt, y una copia que se relaje no se nota por ningún lado hasta
+// que alguien se sale de /fotos/. El porqué está en ese archivo.
 // ============================================================================
-static bool nombreValido(const char* s) {
-    if (!s || strlen(s) != 12) return false;
-    for (int i = 0; i < 8; i++)
-        if (s[i] < '0' || s[i] > '9') return false;
-    return strcmp(s + 8, ".JPG") == 0;
-}
-
 static void autocomprobar() {
-    static const char* malos[] = {"../manifest.txt", "1.JPG",         "00000001.jpg", "000000001.JPG",
-                                  "0000001.JPG",     "0000000a.JPG",  "00000001.JPGX", "../../aa.JPG"};
-    bool ok = nombreValido("00000001.JPG") && nombreValido("99999999.JPG");
-    for (auto m : malos) ok &= !nombreValido(m);
-    ok &= !nombreValido(nullptr);
+    const bool ok = nombreValidoOk();
 
     // El fade: si alguien vuelve a tomar el color ACTUAL como origen, el punto
     // medio se va a 252 en vez de 127 y esta línea lo grita. No se ve mirando el
@@ -135,7 +123,7 @@ static void setBacklight(uint8_t value) {
 //
 // Este archivo ES la etapa 2 de la prueba de provisioning: para cuando llega a
 // autoConnect() ya están construidos los cinco globales y ya corrieron
-// tft.begin(), SD.begin() y lux.begin(). La etapa 1 —WiFiManager y LedRGB, nada
+// tft.begin(), montarTarjeta() y lux.begin(). La etapa 1 —WiFiManager y LedRGB, nada
 // más— vive en firmware/banco/, env:wifi.
 //
 // El confusor #1 de §5 es el heap libre en este punto: WiFiManager levanta su
@@ -176,7 +164,6 @@ void setup() {
     // cifras el confusor #1 se descompone en vez de quedar en un solo delta.
     medir("etapa2-arranque");
 
-    hspi.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
     Wire.begin(21, 22);            // SDA, SCL
     setupBacklight();
 
@@ -184,7 +171,14 @@ void setup() {
     tft.setRotation(0);            // Vertical nativo 320×480
     tft.fillScreen(TFT_BLACK);
 
-    const bool haySD = SD.begin(PIN_SD_CS, hspi);
+    // 20 MHz: MEDIDO en el banco, no elegido. La lectura escala con el reloj
+    // (0.39 → 1.21 MB/s de 4 a 20) pero la escritura satura en ~0.5 MB/s porque
+    // el cuello es el tiempo de programación interno de la tarjeta. 20 es el
+    // escalón que da el 88 % de la lectura de 25 MHz dejando margen bajo el tope
+    // de 25 que fija la especificación — mismo criterio que los 40 MHz del
+    // display. El handshake de init corre a 400 kHz pase lo que pase.
+    const bool haySD = montarTarjeta(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI,
+                                     PIN_SD_CS, 20000000);
     if (!haySD) Serial.println("[ERROR] SD no montada");
 
     if (lux.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
@@ -350,11 +344,11 @@ static void setupWebServer() {
 
     // Streaming directo desde la tarjeta: cero heap, cero parser (§3).
     server.on("/list", HTTP_GET, [](AsyncWebServerRequest* request) {
-        if (!SD.exists("/manifest.txt")) {
+        if (!TARJETA.exists("/manifest.txt")) {
             request->send(200, "text/plain", "");
             return;
         }
-        request->send(SD, "/manifest.txt", "text/plain");
+        request->send(TARJETA, "/manifest.txt", "text/plain");
     });
 
     server.on("/photo", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -364,11 +358,11 @@ static void setupWebServer() {
             return;
         }
         const String path = "/fotos/" + p->value();
-        if (!SD.exists(path)) {
+        if (!TARJETA.exists(path)) {
             request->send(404, "text/plain", "Not Found");
             return;
         }
-        request->send(SD, path, "image/jpeg");
+        request->send(TARJETA, path, "image/jpeg");
     });
 
     server.on("/upload", HTTP_POST,

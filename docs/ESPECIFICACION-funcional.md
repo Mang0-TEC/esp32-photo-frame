@@ -98,6 +98,41 @@ Texto plano, un nombre de archivo por línea. Va en la raíz precisamente para q
 
 Al reconstruir hay que **reanclar el contador**: tomar el nombre numérico más alto que se encontró y dejar el contador de NVS en ese valor + 1. Sin ese paso, un `erase_flash` o un reflasheo deja el contador en cero y las siguientes subidas van sobrescribiendo `00000001.JPG` en adelante, en silencio.
 
+#### Cuánto cuesta ese recorrido — medido, 2026-08-07
+
+**4,763 µs por entrada.** Cien archivos recorridos con `openNextFile()` en 476.3
+ms, desde `firmware/banco/` `[env:display]`, tecla `l`. El recorrido devuelve de
+paso el nombre válido más alto, que es exactamente el dato del reanclaje.
+
+Extrapolado, y ahí está lo interesante:
+
+| Fotos en `/fotos/` | Reconstruir el manifiesto |
+|---|---|
+| 100 | 0.5 s |
+| 1,000 | 4.8 s |
+| 5,000 | 24 s |
+| 121,000 (la capacidad de arriba) | **9.6 minutos** |
+
+**El fallback es viable, pero no a cualquier escala, y conviene tenerlo escrito
+antes de implementarlo.** En los recuentos que este marco va a ver de verdad
+—cientos, a lo sumo unos miles de fotos— son segundos y se pagan una sola vez,
+solo cuando el manifiesto falta o está corrupto. En el techo teórico de capacidad
+son diez minutos, y diez minutos de pantalla en negro al arrancar violarían la
+regla 2 tan claramente como el índice roto que se intenta arreglar.
+
+Dos salidas, ninguna necesaria hoy y las dos baratas cuando haga falta:
+
+- **Pintar la primera foto encontrada y seguir recorriendo detrás.** El marco
+  nunca está en negro, que es lo único que la regla 2 exige; el manifiesto queda
+  completo unos segundos después.
+- **`readdir()` sobre el VFS en vez de `openNextFile()`**, que **abre** cada
+  archivo y ahí está buena parte de los 4,763 µs. Solo leer la entrada de
+  directorio tiene que salir bastante más barato.
+
+No se construye ninguna de las dos ahora: el recorrido solo ocurre cuando el
+índice falta, y con los recuentos reales el número ya es aceptable. Queda escrito
+para que la decisión no se retome desde cero.
+
 ---
 
 ## 4. Carga de fotos
@@ -438,6 +473,20 @@ La dirección contraria no necesita contrapeso: **la subida siempre la dispara u
 **Ninguna cabecera propia en la petición de subida.** `multipart/form-data` es *safelisted* y no dispara preflight; basta un `X-Debug` para que salga un `OPTIONS` que, con cinco rutas y sin catch-all, cae en `onNotFound` → 404, y la subida se rompe sin explicación. Lo mismo vale para el `GET` de verificación: **nada de `cache:"no-store"` en el fetch**, porque `Cache-Control` no es una cabecera safelisted. El `no-store` va en la **respuesta**, que es donde lo pone el servidor.
 
 **Timeout por foto con `AbortController`, no con `AbortSignal.timeout()` ni `AbortSignal.any()`** — el segundo es Safari 17.4+, y la única ruta por la que entran fotos al marco no se apuesta a una versión de WebKit. El valor es la suma de los peores casos redondeada hacia arriba: primera conexión de Safari con handshake, el multipart sobre LAN, y la escritura de la tarjeta, que puede ser de cientos de milisegundos cuando el bloque necesita borrado previo. Los timers estrangulados en segundo plano disparan **tarde, nunca antes**, así que no puede haber abortos espurios por eso.
+
+> **Los 10 s quedaron confirmados con margen, y ya no son una estimación**
+> (2026-08-07). Los dos sumandos están medidos: **315 ms/foto** del multipart
+> desde el iPhone contra el banco, y la escritura a la tarjeta con **241 ms de
+> media para crear un archivo nuevo** y **464 ms en el peor caso observado**, un
+> borrado previo de bloque. El peor caso completo son ~800 ms, o sea **12× de
+> margen**. El valor no cambia; lo que cambia es que ahora tiene base.
+>
+> Ojo con la cifra de escritura que se cita: la de 67 ms que también aparece en
+> el BOM es de **reescribir el mismo archivo**, que no paga asignar clusters ni
+> actualizar el directorio y la FAT. La que corresponde a subir una foto es la de
+> 241 ms. Y los 464 ms **no son una cota** —salieron de corridas de 10 muestras y
+> la cola está submuestreada—, igual que el peor caso de peso de JPEG de esta
+> misma sección tampoco se usa como cota.
 
 **Cancelar corta al terminar la foto en curso; no aborta el multipart en vuelo.** Abortarlo deja la duda de si la foto aterrizó o no, y a 34 KB la espera es de menos de un segundo. **Lo ya subido se conserva**: está en la tarjeta del marco y es trabajo válido.
 
@@ -872,7 +921,8 @@ Detalle y cifras en el BOM.
 | Procesador | ESP32 clásico WROOM, USB-C (a comprar) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
 | Pantalla | ST7796S 3.5" IPS SPI | Nextion (25 fotos precompiladas), all-in-one 5" (presupuesto) |
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
-| Sistema de archivos | FAT32, cluster 32 KB (= un cluster por foto dentro de presupuesto) | NTFS (FatFs solo implementa FAT12/16/32); exFAT (`FF_FS_EXFAT=0` en el binario precompilado de arduino-esp32 3.3.11 — no es "no soportado", está deshabilitado en un binario que este proyecto no controla; habilitarlo obligaría a migrar a ESP-IDF) |
+| Driver de la SD | `sdspi` de ESP-IDF con `SPI_IGNORE_DATA_CRC`, envuelto en un `fs::FS` (`firmware/src/tarjeta.h`) | La librería `SD` de Arduino: manda CMD59 y luego exige un OCR de un CMD58 hecho en idle, que estas tarjetas contestan «ocupada». Medido con dos tarjetas; el master de arduino-esp32 tiene el mismo código. SdFat: dependencia nueva y no es un `fs::FS`, rompería el streaming de `/list` |
+| Sistema de archivos | FAT32, cluster 32 KB **medido desde el ESP32**, no solo desde Windows (= un cluster por foto dentro de presupuesto) | NTFS (FatFs solo implementa FAT12/16/32); exFAT (`FF_FS_EXFAT=0` en el binario precompilado de arduino-esp32 3.3.11 — no es "no soportado", está deshabilitado en un binario que este proyecto no controla; habilitarlo obligaría a migrar a ESP-IDF) |
 | Carga de fotos | Servidor web local + Canvas | App, SD extraíble, USB |
 | Redimensionado | En el navegador del celular | En el ESP32 (imposible) |
 | Selección de fotos | Multi-selección; foto completa con barras por defecto, recorte manual opcional por foto | Una a la vez (tedioso con 30 fotos), recorte automático al centro (decapita gente en silencio y deja el aviso de barras sin objeto), recorte obligatorio por foto (convierte la subida en una tarea) |
@@ -933,4 +983,14 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 10. ~~Confirmar dirección I2C del BH1750.~~ **Hecho, 6-ago-2026: `0x23`**, con `ADDR` al aire, que es lo que asumía §7. Escaneo desde `[env:display]`. De paso salió que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
 11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.
 12. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama, y el contrato ya está entero: `/list` y `/photo` bastan, no hacen falta endpoints nuevos. Va después de probar el marco completo con todos los componentes integrados. Tiene que mostrar **todas** las fotos de la tarjeta y dejar quitar cualquiera; el objetivo es **curación, no espacio** —la capacidad dejó de ser restricción en §3— y las dos trampas del borrado, más el `Content-Type` del cuerpo, están en §4.
-13. Integración y modelado de la carcasa.
+13. **Lector SD y coexistencia de los dos buses.** **Hecho, 7-ago-2026.** Montado
+    en placa y probado con el display encendido a la vez, que era el riesgo real
+    (issue #3601 de TFT_eSPI) y no que `SD.begin()` funcionara. Dos corridas de
+    ~190 s con una tarea en el core 0 martilleando la tarjeta mientras `loop()`
+    pintaba en el core 1: **795 ciclos, ~52 MB verificados byte a byte, cero
+    discrepancias**, y el display perdiendo un 2.4 % en las rayas de 1 px y un
+    2.9 % en los bloques de 16×16. Sin bandas ni píxeles corridos de vista. De
+    paso salió que **la librería `SD` de Arduino no monta estas tarjetas** y hubo
+    que cambiarla por el driver `sdspi` del IDF; el diagnóstico completo, con su
+    control experimental, está en el BOM.
+14. Integración y modelado de la carcasa.

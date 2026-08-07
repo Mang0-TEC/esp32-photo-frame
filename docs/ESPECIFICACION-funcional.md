@@ -18,7 +18,7 @@ Un marco comercial de 10" cuesta $1,000–1,500 MXN y siempre dará más pulgada
 - **Sin app de nube, sin cuenta, sin suscripción.** Muchos marcos comerciales exigen registrarse en un servicio propietario.
 - Está hecho por quien lo regala.
 
-Costo final: **$387 MXN** en componentes nuevos, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y sensor de luz, más $126 del ESP32 de reposición — la unidad USB-C que había en inventario resultó defectuosa. De esos, el ESP32 **ya está comprado**: lo que queda por gastar son los $261.
+Costo hasta hoy: **$387 MXN gastados** en componentes nuevos, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y sensor de luz, más $126 del ESP32 de reposición — la unidad USB-C que había en inventario resultó defectuosa. **Los cuatro están comprados y en mano.** Lo que queda por gastar son **$42** de la reposición del BH1750, que se estropeó en el banco el 7-ago-2026 después de dar su medición, así que el total del proyecto va camino de **$429**.
 
 ### Restricciones de diseño derivadas del contexto
 
@@ -428,7 +428,7 @@ Misma entrada, misma salida, y en Safari pesa **1.74× más con menos calidad**.
 Dos puntos, y ninguno bloquea la construcción:
 
 - **EXIF = 5 (transpose) está verificado solo en Chromium.** Es espejo diagonal, no solo rotación, y el arnés comprueba el intercambio de ejes pero **no** el reflejo — un navegador que rotara sin reflejar daría veredicto verde igualmente, en cualquier motor. El panel lo marca como «reflejo SIN verificar» para que no se lea como una comprobación que no es. Limitación conocida del arnés, no del pipeline. Lo medido en Safari de iOS son dos fotos con EXIF 6; ninguna con 5.
-- **Calidad a q = 0.620 sobre la pantalla real.** Hay tres casos medidos detrás, y el suelo no es raro: `IMG_1473` (tirol blanco, 40.3 KB contra 28.5 de presupuesto), una malla metálica perforada (43.0 KB) y un perro sobre césped (**50.7 KB**, el récord). Los tres son textura fina en todo el encuadre. Puede haber bloqueo visible. Se juzga cuando llegue el hardware, sobre el ST7796S — no tiene sentido evaluarlo en un monitor.
+- **Calidad a q = 0.620 sobre la pantalla real.** Hay tres casos medidos detrás, y el suelo no es raro: `IMG_1473` (tirol blanco, 40.3 KB contra 28.5 de presupuesto), una malla metálica perforada (43.0 KB) y un perro sobre césped (**50.7 KB**, el récord). Los tres son textura fina en todo el encuadre. Puede haber bloqueo visible. **El hardware ya llegó y el pipeline ya pinta las siete fotos de prueba en placa (§6), así que esto dejó de esperar a nadie: es un juicio visual pendiente de ejecutarse** sobre el ST7796S, con una de esas tres fotos en la tarjeta. No tiene sentido evaluarlo en un monitor.
 
 #### El subsampling: nota de alcance, no pendiente
 
@@ -513,7 +513,9 @@ subida que recibe `503` se reintenta igual que una que falló por red.
 
 **Sin miniaturas.** Las fotos pesan 32 KB en el peor caso; la galería sirve los archivos reales y se ahorra generarlas, guardarlas y mantenerlas sincronizadas.
 
-**`/list` devuelve el manifiesto crudo**, con `request->send(SD, "/manifest.txt", "text/plain")`. Es streaming directo desde la tarjeta: cero heap, cero parser en ambos extremos, y el JavaScript hace `split('\n')`. Devolver JSON obligaría al ESP32 a construir la cadena completa en memoria, que es justo lo que el formato del manifiesto (§3) busca evitar.
+**`/list` devuelve el manifiesto crudo**, con `request->send(TARJETA, "/manifest.txt", "text/plain")`. Es streaming directo desde la tarjeta: cero heap, cero parser en ambos extremos, y el JavaScript hace `split('\n')`. Devolver JSON obligaría al ESP32 a construir la cadena completa en memoria, que es justo lo que el formato del manifiesto (§3) busca evitar.
+
+**El objeto es `TARJETA`, y escribir `SD` aquí es la trampa cara de este proyecto.** Las versiones anteriores de este documento publicaban `request->send(SD, …)`, que es el `fs::FS` de la librería `SD` de Arduino — la que **no monta las tarjetas de este proyecto** (§11 y el BOM). `TJpg_Decoder.h` arrastra `<SD.h>` con ese objeto global por su `TJPGD_LOAD_SD_LIBRARY`, así que el snippet equivocado **compila sin una sola queja** y falla en tiempo de ejecución. El objeto bueno lo define `firmware/src/tarjeta.h`, sobre el driver `sdspi` del IDF.
 
 > **Un manifiesto VACÍO hay que atajarlo a mano, y `exists()` no basta.** Medido
 > en placa: con un `/manifest.txt` de 0 B —tarjeta sin fotos, que es un estado
@@ -736,7 +738,14 @@ La condición sale gratis porque ya se calcula: **`getWiFiIsSaved()` era falso a
 
 > Esa condición **solo es fiable con `WiFi.mode(WIFI_STA)` delante**. Sin esa línea `getWiFiIsSaved()` devuelve «sí» sobre una placa virgen —ver más arriba en esta misma sección—, y el QR de uso diario no saldría nunca en el único arranque que lo necesita. Es el mismo bug que se comía el QR de setup, con el segundo síntoma escondido detrás.
 
-Sin decidir todavía: cuánto se queda en pantalla. Las dos salidas razonables son un temporizador —del orden de un minuto, largo porque hay que sacar el teléfono— o dejarlo hasta que llegue la primera petición HTTP, que es la señal de que alguien ya abrió la página. La segunda es más elegante y cuesta una bandera en el servidor; se decide con el display en mano.
+**Decidido, 7-ago-2026: se quita con la primera petición a `/` o a los 60 s, lo que llegue antes — y hacen falta LAS DOS.** Esta sección las planteaba como alternativas y no lo son:
+
+- Solo el **temporizador** lo quitaría con la persona todavía tecleando la dirección.
+- Solo la **petición HTTP** lo dejaría pintado indefinidamente si quien provisiona se distrae o se queda sin batería, y un QR permanente en la sala es regla 3.
+
+Cuesta una bandera `volatile` en el handler de `/` y un deadline comprobado en `loop()`. La bandera se pone en `/` y no en `/list` ni en `/photo`: ésas llegan detrás de `/` de todas formas.
+
+> **El QR en pantalla tiene que BLOQUEAR el cambio periódico de foto**, y es el detalle que se olvida: sin eso, los 30 s del temporizador de §6 pintan una foto encima del QR y la única pista para subir fotos se va sin que nadie la haya usado. Y al retirarlo hay que repintar lo que tapó: si no hay tarjeta, `showNextPhoto()` se sale de inmediato y el QR se quedaría en pantalla pese a haber vencido.
 
 **El QR de uso diario debe regenerarse al vuelo**, leyendo la IP actual. Los routers domésticos reasignan por DHCP, así que la IP de hoy puede no ser la de la próxima semana.
 
@@ -908,7 +917,7 @@ La lógica es la de un celular:
 
 El firmware sube o baja el backlight un paso de PWM por lectura de BH1750 (período de ~200 ms), así que el recorrido completo entre extremos tarda ~40 s — deliberadamente lento, al ritmo al que un cuarto se oscurece de verdad, no un salto brusco.
 
-Lo que falta: **histéresis entre los umbrales de lux.** Con el valor de luz oscilando justo en el borde de un umbral (100 lux, 10 lux), el brillo objetivo puede alternar entre dos niveles lectura a lectura, y aunque la rampa de un paso amortigua el salto, no lo elimina. Marcado `TODO` en el propio código (`updateBrightness()`, `firmware/src/main.cpp`) — no bloquea el resto del firmware, se resuelve cuando el sensor esté en placa y se pueda ver el efecto real en vez de solo razonarlo.
+Lo que falta: **histéresis entre los umbrales de lux.** Con el valor de luz oscilando justo en el borde de un umbral (100 lux, 10 lux), el brillo objetivo puede alternar entre dos niveles lectura a lectura, y aunque la rampa de un paso amortigua el salto, no lo elimina. Marcado `TODO` en el propio código (`updateBrightness()`, `firmware/src/main.cpp`) — no bloquea el resto del firmware, se resuelve **cuando llegue el BH1750 de reposición** y se pueda ver el efecto real en vez de solo razonarlo. (El sensor original sí estuvo en placa y dio `0x23`; se estropeó después, ver más abajo.)
 
 ### Degradación elegante
 
@@ -1084,7 +1093,7 @@ Detalle y cifras en el BOM.
 
 | Decisión | Elegido | Descartado |
 |---|---|---|
-| Procesador | ESP32 clásico WROOM, USB-C (a comprar) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
+| Procesador | ESP32 clásico WROOM, USB-C — **comprado y verificado en placa** (`ESP32-D0WD-V3 rev v3.1`, `PSRAM 0 B`) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
 | Pantalla | ST7796S 3.5" IPS SPI | Nextion (25 fotos precompiladas), all-in-one 5" (presupuesto) |
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
 | Driver de la SD | `sdspi` de ESP-IDF con `SPI_IGNORE_DATA_CRC`, envuelto en un `fs::FS` (`firmware/src/tarjeta.h`) | La librería `SD` de Arduino: manda CMD59 y luego exige un OCR de un CMD58 hecho en idle, que estas tarjetas contestan «ocupada». Medido con dos tarjetas; el master de arduino-esp32 tiene el mismo código. SdFat: dependencia nueva y no es un `fs::FS`, rompería el streaming de `/list` |
@@ -1173,4 +1182,31 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
     pad capacitivo, que todavía no existe (§8)— y la histéresis del brillo sigue
     marcada como `TODO`, esperando al BH1750 de reposición.
 
-15. Integración y modelado de la carcasa.
+15. **El marco recibe fotos por sí solo.** **Hecho, 7-ago-2026.** Las tres piezas
+    que faltaban para que el regalo no dependa de una Mac, y que eran la misma
+    historia: sin página no hay dónde subir, sin `/upload` no hay a dónde, y sin
+    QR nadie llega a ninguna de las dos.
+
+    - **`POST /upload`** con el contrato entero de §4. Verificado en placa contra
+      **43 subidas**: `200` con su nombre, `400` con campo distinto de `foto`,
+      `413` con un archivo de 149 KB, y **`503` con dos multipart a la vez**.
+      Contador de NVS monótono y sin huecos, manifiesto anexado, e
+      **integridad byte a byte** comprobada devolviendo la foto por `/photo`.
+    - **La página en PROGMEM**, gzipeada por un `extra_script` de PlatformIO que
+      toma solo `web/index.html`. **31,303 B en el binario**, servida con
+      `Content-Encoding: gzip` y verificada de extremo a extremo: el cliente la
+      descomprime a los **92,738 B exactos** del archivo original.
+    - **Los dos QR**, con el de uso diario saliendo solo al terminar el
+      provisioning (§5).
+
+    **Coste**: RAM 56,832 B y flash 1,327,527 B, o sea **+24 B y +39.4 KB** sobre
+    el binario del punto 14. Los +24 B de RAM son la comprobación de que los 31 KB
+    de la página fueron a `.rodata` y no a DRAM.
+
+    **Falta de esta pieza, y no es poco**: todo lo que necesita el teléfono. La
+    tanda de 30 desde el iPhone, el recorrido completo de placa virgen —QR de
+    setup → portal → QR de uso diario→ abrir la página—, si el display tartamudea
+    mientras entra una foto, y **el heap con el portal cautivo abierto**, que es
+    el número que decide si el buffer de 64 KB se queda donde está.
+
+16. Integración y modelado de la carcasa.

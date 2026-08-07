@@ -24,6 +24,9 @@
 #include "LedRGB.h"
 #include "nombre.h"
 #include "tarjeta.h"   // la SD por sdspi del IDF; ahí está por qué NO se usa SD.h
+// GENERADO en cada build por tools/empaquetar_pagina.py, y por eso no está en
+// git: son ~183 KB de fuente de C que cambian enteros al tocar el HTML.
+#include "pagina.h"
 
 // ============================================================================
 // Pines (BOM-marco-fotos-esp32.md, Mapa de GPIOs)
@@ -97,6 +100,54 @@ static bool     medirLaProxima   = true;    // la primera foto de cada arranque 
 static uint32_t empujeUs = 0;
 
 // ============================================================================
+// Subida de fotos (§4)
+//
+// El buffer se reserva UNA VEZ en setup(), antes de WiFi, y no se libera jamás.
+// No es tacañería de código: el callback pide 64 KB CONTIGUOS, y en el banco de
+// red se midió que mayorBloque se desploma de 34,804 a 16,372 B en cuanto sube
+// AsyncTCP, que reserva por conexión. Un malloc por subida podría fallar en la
+// única ruta por la que entran fotos al marco, y ese fallo sale como 507 — que
+// corta la tanda entera y no es reintentable. Pedirlo con el heap entero
+// convierte un riesgo en una cifra fija.
+//
+// TOPE_SUBIDA es contrato con la página (TOPE_FIRMWARE en web/index.html) y con
+// el caso 413 del arnés. No moverlo por un lado solo.
+static constexpr size_t TOPE_SUBIDA = 64 * 1024;
+static uint8_t* bufSubida = nullptr;
+
+// Candado de concurrencia 1. La página sube de una en una, pero eso es DISCIPLINA
+// DEL CLIENTE y el servidor no puede confiar en ella: dos multipart a la vez
+// sobre el mismo buffer dan una foto corrupta en silencio, así que el segundo se
+// rechaza con 503 en vez de mezclarse. La identidad de la petición ES el candado.
+static AsyncWebServerRequest* dueno   = nullptr;
+static AsyncWebServerRequest* intruso = nullptr;
+static size_t acumSubida = 0;
+static bool   desbordo   = false;
+
+// ============================================================================
+// QR en pantalla (§5)
+//
+// Un QR pintado se retira por lo que llegue antes: que alguien pida la página
+// —o sea, que ya esté subiendo fotos— o el minuto de gracia. Hacen falta LAS
+// DOS. Solo el temporizador lo quitaría con la persona todavía tecleando; sola
+// la petición HTTP lo dejaría pintado para siempre si quien provisiona se
+// distrae o se queda sin batería, y un QR permanente en la sala es regla 3.
+//
+// paginaAbierta la escribe el hilo async_tcp y la lee loop(): volatile, igual
+// que ledPedido y por el mismo motivo.
+static volatile bool paginaAbierta = false;
+static uint32_t qrHasta = 0;   // deadline en ms; 0 = no hay QR en pantalla
+// Un minuto es largo a propósito: hay que sacar el teléfono, desbloquearlo y
+// abrir la cámara.
+static constexpr uint32_t QR_MS = 60000;
+
+// Versión 3: 29×29 módulos y 53 bytes de capacidad con ECC bajo. Las dos cargas
+// de este firmware miden 38 y ~22, así que entran con holgura.
+static constexpr uint8_t QR_VERSION = 3;
+static constexpr uint8_t QR_LADO    = 4 * QR_VERSION + 17;               // 29
+static constexpr size_t  QR_BUF     = (QR_LADO * QR_LADO + 7) / 8;       // 106 B
+
+// ============================================================================
 // Brillo automático (BH1750)
 // ============================================================================
 static uint8_t  currentBacklight = 255;
@@ -121,6 +172,9 @@ static void pantallaMensaje(const char* l1, const char* l2);
 static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
 static void drawSetupQR();
 static void drawUsageQR();
+static void subidaFin(AsyncWebServerRequest* request);
+static void subidaChunk(AsyncWebServerRequest* request, String filename, size_t index,
+                        uint8_t* data, size_t len, bool final);
 
 // ============================================================================
 // Autocomprobación de arranque
@@ -141,8 +195,14 @@ static void autocomprobar() {
                         LedRGB::lerp(0, 255, 350, 350) == 255 &&
                         medio >= 126 && medio <= 129;
 
-    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)\n",
-                  ok ? "ok" : "*** FALLA ***", okFade ? "ok" : "*** FALLA ***", medio);
+    // QR_BUF está derivado de la fórmula de la librería, no copiado de una
+    // medición. Si una versión futura cambiara el cálculo, drawQR() desbordaría
+    // 106 bytes de pila en silencio — que es justo el fallo que no se diagnostica.
+    const bool okQR = qrcode_getBufferSize(QR_VERSION) == QR_BUF;
+
+    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)  qrBuf: %s (%u)\n",
+                  ok ? "ok" : "*** FALLA ***", okFade ? "ok" : "*** FALLA ***", medio,
+                  okQR ? "ok" : "*** FALLA ***", (unsigned)QR_BUF);
 }
 
 // ============================================================================
@@ -253,6 +313,21 @@ void setup() {
         Serial.println("[WARN] BH1750 no detectado — brillo fijo");
     }
 
+    // El buffer de subida se pide UNA VEZ y no se libera nunca. La posición no es
+    // casual, y es lo único de este bloque que hay que respetar al mover código:
+    //
+    //  - DESPUÉS del manifiesto, porque reconstruirManifiesto() deriva su bloque
+    //    de ordenación de largest_free_block/2. Pedir los 64 KB antes bajaría B de
+    //    ~13,822 a ~5,630 fotos sin ninguna necesidad.
+    //  - ANTES de WiFiManager, porque AsyncTCP reserva por conexión y parte el
+    //    heap: en el banco de red mayorBloque cae de 34,804 a 16,372 B en cuanto
+    //    sube el WiFi. 64 KB CONTIGUOS pedidos después son una apuesta.
+    //
+    // Si falla, /upload contesta 507 y el resto del marco sigue mostrando fotos.
+    bufSubida = (uint8_t*)malloc(TOPE_SUBIDA);
+    if (!bufSubida) Serial.println("[ERROR] sin heap para el buffer de subida — /upload dara 507");
+    medir("etapa2-postBufferSubida");
+
     // --- WiFiManager: provisioning ---
     WiFiManager wm;
 
@@ -288,7 +363,8 @@ void setup() {
     // autoConnect() intenta primero las credenciales guardadas y solo levanta el
     // AP si eso falla, así que hay que preguntar ANTES: pintar el QR de setup
     // incondicionalmente lo mostraría unos segundos en cada arranque normal.
-    if (wm.getWiFiIsSaved()) {
+    const bool habiaCredenciales = wm.getWiFiIsSaved();
+    if (habiaCredenciales) {
         led.setState(LedRGB::State::WIFI_CONNECTING);
     } else {
         led.setState(LedRGB::State::WIFI_SETUP);
@@ -321,9 +397,30 @@ void setup() {
     // —su fila pasó a autoOff— porque ahora el error también está en pantalla.
     if (!haySD) led.setState(LedRGB::State::SD_ERROR);
 
-    // La primera foto va DESPUÉS del bloque de WiFi: mientras autoConnect()
-    // bloquea, la pantalla es la de §5 y no una foto.
-    if (haySD) showNextPhoto();
+    // El QR de uso diario sale SOLO al terminar el provisioning, y el disparador
+    // es «se acaba de provisionar», no «se conectó»: pintarlo en cada arranque
+    // con éxito dejaría un QR unos segundos cada vez que se enchufa el marco, que
+    // se ve a proyecto y no a producto — el mismo argumento por el que el de
+    // setup tampoco se pinta incondicionalmente.
+    //
+    // Y hace falta que salga solo: el toque largo también lo muestra, pero nadie
+    // le va a explicar ese gesto a quien reciba el marco. El momento en que
+    // alguien acaba de meter la contraseña del WiFi es exactamente el momento en
+    // que quiere subir fotos, y hasta aquí el único puente era teclear una IP que
+    // nadie le ha dicho.
+    //
+    // La condición sale gratis porque ya se calculó arriba, pero SOLO es fiable
+    // con el WiFi.mode(WIFI_STA) de más arriba: sin él getWiFiIsSaved() devuelve
+    // «sí» sobre una placa virgen y este QR no saldría nunca en el único arranque
+    // que lo necesita. Es el mismo bug que se comía el QR de setup, con el
+    // segundo síntoma escondido detrás.
+    if (wifiOk && !habiaCredenciales) {
+        drawUsageQR();
+    } else if (haySD) {
+        // La primera foto va DESPUÉS del bloque de WiFi: mientras autoConnect()
+        // bloquea, la pantalla es la de §5 y no una foto.
+        showNextPhoto();
+    }
 }
 
 // ============================================================================
@@ -340,10 +437,26 @@ void loop() {
     handleTouch();
     updateBrightness();
 
-    // showNextPhoto() fija ultimaFotoMs, así que el toque corto reinicia este
-    // reloj gratis. El servidor async atiende sus callbacks en otro hilo; nada
-    // que bombear aquí.
-    if (tarjetaMontada() && millis() - ultimaFotoMs >= FOTO_PERIODO_MS) showNextPhoto();
+    // Un QR en pantalla se retira por lo que llegue antes: alguien abrió la
+    // página, o se acabó el minuto. Y mientras esté puesto BLOQUEA el cambio
+    // periódico de foto de abajo — sin este `else`, los 30 s del temporizador
+    // pintan una foto encima del QR y la única pista para subir fotos se va sin
+    // que nadie la haya usado.
+    if (qrHasta) {
+        if (paginaAbierta || (int32_t)(millis() - qrHasta) >= 0) {
+            qrHasta = 0;
+            // Sin tarjeta, showNextPhoto() se sale de inmediato y el QR se
+            // quedaría pintado para siempre pese a haber vencido. Hay que repintar
+            // el error que el QR tapó al salir — es el mismo reparto que setup().
+            if (tarjetaMontada()) showNextPhoto();
+            else                  pantallaMensaje("No se pueden", "leer las fotos");
+        }
+    } else if (tarjetaMontada() && millis() - ultimaFotoMs >= FOTO_PERIODO_MS) {
+        // showNextPhoto() fija ultimaFotoMs, así que el toque corto reinicia este
+        // reloj gratis. El servidor async atiende sus callbacks en otro hilo;
+        // nada que bombear aquí.
+        showNextPhoto();
+    }
 
     delay(10);
 }
@@ -403,14 +516,187 @@ static void updateBrightness() {
 }
 
 // ============================================================================
+// POST /upload — los dos callbacks (§4)
+//
+// LOS DOS CORREN EN EL HILO async_tcp, a prioridad 10 y con 16384 B de stack.
+// NO en loop(). Es la trampa central de esta ruta y por eso el LED se pide por
+// ledPedido en vez de tocarlo aquí.
+// ============================================================================
+
+// Callback de datos. Aquí NO se escribe a la tarjeta: se acumula y ya.
+static void subidaChunk(AsyncWebServerRequest* request, String filename, size_t index,
+                        uint8_t* data, size_t len, bool final) {
+    (void)filename; (void)final;
+
+    if (index == 0 && dueno == nullptr) {
+        dueno = request;
+        // Olvidar al intruso anterior: los AsyncWebServerRequest se destruyen y
+        // el asignador puede devolver la misma dirección a otra petición, así que
+        // un puntero rancio aquí acabaría etiquetando como «solapada» una que solo
+        // venía sin parte de archivo. Cuesta una línea y quita la duda entera.
+        intruso = nullptr;
+        acumSubida = 0;
+        desbordo = false;
+        ledPedido = LedRGB::State::WARNING;
+
+        // Rescata el candado si el cliente se cae a media subida: sin esto,
+        // `dueno` se queda apuntando a una petición muerta y todas las siguientes
+        // comen 503 para siempre.
+        //
+        // El GUARD DE IDENTIDAD no es defensivo de más: onDisconnect también se
+        // dispara al destruirse una petición que terminó bien, y sin comparar
+        // contra `request` el de la foto N limpiaría la propiedad que ya tomó la
+        // N+1 — abriendo justo la ventana de dos multipart sobre el mismo buffer
+        // que el 503 existe para cerrar.
+        request->onDisconnect([request]() {
+            if (dueno == request) dueno = nullptr;
+        });
+    }
+
+    // Subida solapada: se drena en silencio y no se toca NADA del dueño legítimo.
+    // Se anota quién es para que su respuesta sea 503 y no 400: un POST sin parte
+    // de archivo tampoco es dueño, y ése sí es 400.
+    if (dueno != request) {
+        intruso = request;
+        return;
+    }
+
+    if (!desbordo && bufSubida) {
+        if (acumSubida + len > TOPE_SUBIDA) {
+            // Se olvida lo acumulado y se SIGUE DRENANDO. Cerrar el socket haría
+            // que fetch() reportara error de red, y la página no podría distinguir
+            // «la foto pesa de más» de «se cayó el WiFi» — que son dos mensajes y
+            // dos acciones distintas en §4. Con el buffer reservado no hay nada
+            // que liberar; la protección es dejar de copiar.
+            desbordo = true;
+        } else {
+            memcpy(bufSubida + acumSubida, data, len);
+        }
+    }
+    acumSubida += len;
+}
+
+// Escribe la foto y la anexa al manifiesto. Devuelve false si algo falló, y en
+// ese caso no deja rastro a medias en la tarjeta.
+static bool guardarFoto(char* nombreOut, size_t cap) {
+    // El nombre se RESERVA EN NVS ANTES de escribir. Si la placa se reinicia a
+    // media escritura se quema un número, y §3 dice que los huecos son correctos
+    // y que el contador no retrocede. Al revés —persistir después— un reinicio
+    // reutilizaría el número y colisionaría con lo que ya esté en el manifiesto.
+    Preferences p;
+    if (!p.begin("marco", false)) return false;
+    const uint32_t n = p.getUInt("contador", 0);
+    p.putUInt("contador", n + 1);
+    p.end();
+
+    snprintf(nombreOut, cap, "%08lu.JPG", (unsigned long)n);
+    char ruta[32];
+    snprintf(ruta, sizeof ruta, "%s/%s", DIR_FOTOS, nombreOut);
+
+    File f = TARJETA.open(ruta, FILE_WRITE);
+    if (!f) return false;
+    const size_t escritos = f.write(bufSubida, acumSubida);
+    f.close();
+    if (escritos != acumSubida) {
+        // Tarjeta llena, y de paso cualquier otro fallo de escritura. Se borra el
+        // truncado: un JPEG a medias en /fotos/ entraría al manifiesto en la
+        // siguiente reconstrucción y se pintaría roto. Comprobar el espacio antes
+        // costaría una consulta más y no cubriría el resto de fallos.
+        TARJETA.remove(ruta);
+        return false;
+    }
+
+    // El manifiesto va DESPUÉS de la foto, nunca antes. Un corte entre los dos
+    // pasos deja un archivo huérfano en /fotos/, que la reconstrucción recoge; al
+    // revés dejaría una entrada muerta que cuesta un getFsJpgSize fallido por
+    // vuelta hasta agotar SALTOS_MAX. Es el orden de §4 para el borrado, al revés.
+    //
+    // Y este append es lo que saca a /manifest.txt del estado de 0 bytes, que es
+    // el que hace que /list conteste 500 (ver el atajo de arriba).
+    File m = TARJETA.open(MANIFIESTO, FILE_APPEND);
+    if (!m) return false;
+    const bool okM = m.printf("%s\n", nombreOut) > 0;
+    m.close();
+    return okM;
+}
+
+// Handler de respuesta. La escritura ocurre AQUÍ, en línea, que es lo que manda
+// el BOM: la cola de FreeRTOS con tarea dedicada y 202 es más cara y solo se paga
+// si se mide que hace falta. Criterio de escalada, en el BOM.
+static void subidaFin(AsyncWebServerRequest* request) {
+    // Ocupante ilegítimo: sale SIN limpiar `dueno`. Limpiarlo le arrancaría la
+    // propiedad al dueño legítimo a media subida, y su siguiente chunk volvería a
+    // reclamar el buffer con acumSubida ya avanzado — foto corrupta, en silencio.
+    if (dueno != request) {
+        const bool solapada = (request == intruso);
+        Serial.printf("[subida] -> %d (%s)\n", solapada ? 503 : 400,
+                      solapada ? "solapada" : "sin parte de archivo");
+        ledPedido = LedRGB::State::UPLOAD_ERROR;
+        request->send(solapada ? 503 : 400, "text/plain", "");
+        return;
+    }
+
+    int code;
+    char json[64] = "";
+    char nombre[16];
+
+    if (!bufSubida || !tarjetaMontada()) {
+        // 507 para «sin tarjeta» es semánticamente imperfecto —§4 no tiene código
+        // para eso— pero el comportamiento que la página le da es el correcto:
+        // corta la tanda entera y no reintenta. Inventar un sexto código obligaría
+        // a tocar web/index.html y §4 para no ganar nada.
+        code = 507;
+    } else if (!request->hasParam("foto", true, true)) {
+        code = 400;   // §4 especifica el campo "foto"
+    } else if (desbordo) {
+        code = 413;
+    } else if (acumSubida == 0) {
+        code = 400;   // un JPEG de 0 B rompería la reproducción y la verificación
+    } else if (!guardarFoto(nombre, sizeof nombre)) {
+        code = 507;
+    } else {
+        snprintf(json, sizeof json, "{\"ok\":true,\"n\":\"%s\"}", nombre);
+        code = 200;
+    }
+
+    // El heap va en la MISMA línea, igual que en el banco: el riesgo de esta ruta
+    // es que los 64 KB contiguos no estén, y mayorBloque con AsyncTCP arriba y una
+    // conexión viva es el único sitio donde ese número se puede leer. Cuesta un
+    // printf que solo va al serie.
+    Serial.printf("[subida] %u B -> %d%s%s  heap=%u mayorBloque=%u minHist=%u\n",
+                  (unsigned)acumSubida, code,
+                  code == 200 ? " " : "", code == 200 ? nombre : "",
+                  ESP.getFreeHeap(),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                  ESP.getMinFreeHeap());
+
+    // Verde es «foto recibida» además de «conectado y operando» (§9). El auto-off
+    // de su fila lo apaga a los 30 s de la última.
+    ledPedido = (code == 200) ? LedRGB::State::WIFI_OK : LedRGB::State::UPLOAD_ERROR;
+
+    dueno = nullptr;
+    if (code == 200) request->send(200, "application/json", json);
+    else             request->send(code, "text/plain", "");
+}
+
+// ============================================================================
 // Servidor web — contrato HTTP (§4)
 // ============================================================================
 static void setupWebServer() {
 
     server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-        // TODO: request->send_P(200, "text/html", webpage_gz, webpage_gz_len)
-        //       con Content-Encoding: gzip, desde PROGMEM.
-        request->send(200, "text/plain", "Marco de Fotos — placeholder");
+        // Que alguien pida la página ES la señal de que ya abrió el navegador, y
+        // es lo que retira el QR de uso diario antes de su minuto. Se pone aquí y
+        // no en /list ni en /photo: ésas llegan detrás de ésta de todas formas.
+        paginaAbierta = true;
+
+        // Sin Cache-Control: la página vive en flash y cachearla es correcto. El
+        // no-store del banco está ahí por otra razón (su buffer compartido) y esa
+        // parte no se copia.
+        AsyncWebServerResponse* r =
+            request->beginResponse(200, "text/html", PAGINA_GZ, PAGINA_GZ_LEN);
+        r->addHeader("Content-Encoding", "gzip");
+        request->send(r);
     });
 
     // Streaming directo desde la tarjeta: cero heap, cero parser (§3).
@@ -447,20 +733,7 @@ static void setupWebServer() {
         request->send(TARJETA, path, "image/jpeg");
     });
 
-    server.on("/upload", HTTP_POST,
-        [](AsyncWebServerRequest* request) {
-            // TODO: escribir el buffer a la SD aquí, no en el callback de datos.
-            ledPedido = LedRGB::State::UPLOAD_ERROR;
-            request->send(500, "text/plain", "sin implementar");
-        },
-        [](AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len, bool final) {
-            // Hilo async_tcp: prohibido bloquear con I/O de tarjeta. Se acumula en
-            // heap con tope duro de 64 KB → 413, y se escribe una sola vez con
-            // final == true. Ver el BOM y §4.
-            if (index == 0) ledPedido = LedRGB::State::WARNING;
-            (void)data; (void)len; (void)final;
-        }
-    );
+    server.on("/upload", HTTP_POST, subidaFin, subidaChunk);
 
     server.on("/delete", HTTP_POST, [](AsyncWebServerRequest* request) {
         // Responder 200 sobre un borrado que no ocurrió es la trampa que §4
@@ -704,9 +977,15 @@ static bool reconstruirManifiesto() {
     // cada prueba en placa. Cuando no cabe, la MISMA ruta da varias pasadas y no
     // hay techo de fotos.
     //
-    // La fracción es 1/2 del bloque contiguo mayor y no 1/4 porque esto corre en
-    // el arranque, antes de autoConnect(): el momento con el heap más vacío de
-    // toda la vida del firmware, donde nada compite.
+    // La fracción es 1/2 del bloque contiguo mayor y no un número fijo. Ojo con
+    // la justificación, que describía UN camino de los DOS: sí, esto corre en el
+    // arranque antes de autoConnect() —el momento con el heap más entero—, pero
+    // showNextPhoto() también lo llama en RUNTIME cuando el índice se rompe, con
+    // WiFi arriba, AsyncTCP pidiendo por conexión y los 64 KB de la subida ya
+    // reservados. Por eso la fracción se deriva del heap del momento en vez de
+    // fijarse: en el arranque B sale ~13,822 fotos y en runtime bastante menos.
+    // Que sea menos no es avería —por debajo del piso de 64 cae a la rama de
+    // degradación de abajo, que es orden de directorio y regla 2 respetada.
     //
     // ponytail: las pasadas van acotadas por (mayor-menor)/B, o sea por el VALOR
     // del contador y no por el número de fotos. Un contador disperso da pasadas
@@ -820,12 +1099,73 @@ static void showNextPhoto() {
     ultimaFotoMs = millis();          // no reintentar en cada vuelta de loop()
 }
 
+// Pinta un QR versión 3 centrado, con su zona tranquila y dos líneas de texto.
+//
+// La ZONA TRANQUILA no es margen estético: el estándar pide 4 módulos de claro
+// alrededor y sin ellos muchos escáneres sencillamente no lo ven. Aquí se pinta
+// como un rectángulo blanco MAYOR que el QR, y por eso el fondo blanco se dibuja
+// antes que los módulos en vez de dejar el negro de la pantalla.
+//
+// LAS CADENAS VAN SIN ACENTOS, por lo mismo que pantallaMensaje(): la fuente 4
+// cubre ASCII 32-126 y nada más.
+static void drawQR(const char* carga, const char* l1, const char* l2) {
+    QRCode qr;
+    // 106 B en la pila. La constante se deriva de la fórmula de la librería en
+    // vez de escribirse a mano, y autocomprobar() confirma al arrancar que
+    // qrcode_getBufferSize(3) sigue devolviendo esto — si una versión futura
+    // cambiara el cálculo, un buffer corto se desbordaría en silencio.
+    uint8_t modulos[QR_BUF];
+    if (qrcode_initText(&qr, modulos, 3, ECC_LOW, carga) < 0) {
+        // No debería ocurrir con cargas de tamaño conocido, pero quedarse con la
+        // pantalla en negro sí sería regla 2 rota: al menos se dice algo.
+        pantallaMensaje("No se pudo", "generar el codigo");
+        return;
+    }
+
+    constexpr int16_t ESCALA = 8;
+    constexpr int16_t QUIETA = 4;                        // módulos de zona tranquila
+    const int16_t lado  = qr.size * ESCALA;              // 232 px
+    const int16_t marco = lado + 2 * QUIETA * ESCALA;    // 296 px, cabe en 320
+    const int16_t x0 = (tft.width()  - marco) / 2;
+    // Un poco por encima del centro: el texto de abajo necesita su sitio.
+    const int16_t y0 = (tft.height() - marco) / 2 - 40;
+
+    tft.fillScreen(TFT_BLACK);
+    tft.fillRect(x0, y0, marco, marco, TFT_WHITE);
+
+    const int16_t qx = x0 + QUIETA * ESCALA, qy = y0 + QUIETA * ESCALA;
+    for (uint8_t y = 0; y < qr.size; y++) {
+        for (uint8_t x = 0; x < qr.size; x++) {
+            if (qrcode_getModule(&qr, x, y)) {
+                tft.fillRect(qx + x * ESCALA, qy + y * ESCALA, ESCALA, ESCALA, TFT_BLACK);
+            }
+        }
+    }
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    const int16_t cx = tft.width() / 2, ty = y0 + marco + 30;
+    tft.drawString(l1, cx, ty, 4);
+    if (l2) tft.drawString(l2, cx, ty + 30, 4);
+
+    paginaAbierta = false;   // limpiar antes de armar, o se retira en la vuelta siguiente
+    qrHasta = millis() + QR_MS;
+}
+
 static void drawSetupQR() {
-    // TODO: QR de WIFI:S:Marco-Fotos;T:WPA;P:fotos1234;; con QRCode de ricmoo,
-    //       versión 3, escala 8, centrado, con ≥4 módulos de zona tranquila.
+    // Codifica una CONSTANTE, y de ahí que este QR pueda pintarse antes de
+    // autoConnect() sin necesitar el modo no bloqueante de WiFiManager. El
+    // formato WIFI: lo reconocen Android e iOS de fábrica: se conectan solos y
+    // la persona nunca ve una contraseña.
+    drawQR("WIFI:S:Marco-Fotos;T:WPA;P:fotos1234;;",
+           "Escanea este codigo", "para conectar el marco");
 }
 
 static void drawUsageQR() {
-    // TODO: QR de http://<IP actual>. Se regenera al vuelo: el DHCP doméstico
-    //       reasigna, así que la IP de hoy puede no ser la de la semana que viene.
+    // Se REGENERA al vuelo, y no es paranoia: el DHCP doméstico reasigna, así
+    // que la IP de hoy puede no ser la de la semana que viene.
+    char url[32];
+    snprintf(url, sizeof url, "http://%s", WiFi.localIP().toString().c_str());
+    // La IP también en texto: cuesta una línea y cubre a quien prefiera teclearla.
+    drawQR(url, "Escanea para subir fotos", url + 7);
 }

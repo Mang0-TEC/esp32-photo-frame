@@ -16,6 +16,12 @@ wifi_credentials.h
 *.bin
 *.elf
 
+# La página gzipeada a array de C: la genera tools/empaquetar_pagina.py en cada
+# build. Son ~183 KB de fuente que cambian ENTEROS al tocar una línea del HTML, y
+# versionarlos ensuciaría todos los diffs de la página. El script sí se versiona,
+# así que el repo basta para flashear.
+firmware/src/pagina.h
+
 # macOS
 .DS_Store
 

@@ -54,7 +54,7 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
 | 15 | Filamento PLA | Carcasa y bisel |
-| 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`), `/dev/cu.wchusbserial1110` — va literal en los dos `.ini` del banco, un glob no funciona. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
+| 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`), `/dev/cu.wchusbserial1120` — va literal en cada env, y un glob no funciona: son **cinco** bloques de `upload_port`/`monitor_port`, uno por env (los cuatro del banco más el del marco). Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
 La placa micro-USB **no es la unidad final**: micro-USB es mal conector para un
 objeto fijo 24/7 durante años; se afloja y su pad termina desprendiéndose del
@@ -691,15 +691,76 @@ Medido en placa con `[env:display]`, tres binarios, sobre jumpers de protoboard.
 
 ### Nunca escribir a la SD desde el callback de upload
 
-El callback de upload de `ESPAsyncWebServer` **no corre en `loop()`**: corre en el hilo `async_tcp`, a prioridad 10 y con 16384 B de stack. Bloquearlo con I/O de tarjeta SD —una escritura puede tardar decenas de milisegundos cuando el bloque necesita borrado previo— provoca watchdog y conexiones caídas. Y está en la única ruta por la que entran fotos al marco.
+El callback de upload de `ESPAsyncWebServer` **no corre en `loop()`**: corre en el hilo `async_tcp`, a prioridad 10 y con 16384 B de stack. Y está en la única ruta por la que entran fotos al marco.
+
+**Cuánto tarda una escritura, con los números medidos y no con la estimación vieja.** Esta sección decía «decenas de milisegundos», y la tabla de rendimiento de la tarjeta —130 líneas más abajo— la deroga: **crear un archivo nuevo cuesta 241 ms de media** a 20 MHz, y el **peor caso observado son 464 ms**, un borrado previo de bloque. Los 67 ms que también aparecen en aquella tabla son de *reescribir el mismo archivo*, que no paga asignar clusters ni actualizar el directorio y la FAT; no son los de subir una foto.
 
 El patrón correcto, aprovechando que los archivos llegan a 32 KB en el peor caso:
 
-- Acumular los chunks en un buffer de heap.
+- Acumular los chunks en un buffer de heap, **reservado al arrancar** (ver abajo).
 - Escribir a la SD **una sola vez**, cuando `final == true`.
-- **Tope duro de 64 KB.** Si se excede, responder `413` y liberar el buffer de inmediato. Sin ese tope, un cliente roto o malicioso tumba el heap del ESP32.
+- **Tope duro de 64 KB.** Si se excede, responder `413` y dejar de acumular de inmediato. Sin ese tope, un cliente roto o malicioso tumba el heap del ESP32.
 
-Si aun con una sola escritura truena el watchdog, la salida es cola de FreeRTOS + tarea dedicada de escritura y responder `202` en vez de `200`. Es más complejo y solo se paga si hace falta — no empezar ahí.
+#### El buffer se reserva al ARRANCAR, y la medición lo dice sin ambigüedad
+
+**`mayorBloque` durante una subida real, con AsyncTCP arriba y una conexión viva,
+son 25,588 B.** El buffer necesita **65,536 contiguos**. O sea que un `malloc` por
+subida **no fallaría por poco: fallaría por 2.5×**, y en la única ruta por la que
+entran fotos al marco.
+
+| Momento | heap libre | `mayorBloque` |
+|---|---|---|
+| Arranque | 265,904 | 110,580 |
+| Tras reservar los 64 KB | 161,368 | **42,996** |
+| Antes de `autoConnect()` | 110,496 | 42,996 |
+| Después de `autoConnect()` | 109,336 | 42,996 |
+| **Durante una subida, AsyncTCP arriba** | **~87,000** | **25,588** |
+
+Por eso el `malloc` va en `setup()` y no se libera nunca. **La posición dentro de
+`setup()` tampoco es libre**, y son dos restricciones que tiran en sentidos
+opuestos:
+
+- **Después del bloque del manifiesto**, porque `reconstruirManifiesto()` deriva su
+  bloque de ordenación de `largest_free_block / 2`. Pedir los 64 KB antes bajaría
+  `B` de ~13,822 a ~5,630 fotos sin ninguna necesidad.
+- **Antes de `WiFiManager`**, por la tabla de arriba.
+
+Dos cosas más que salen de esos números y conviene no perder:
+
+- **La ruta de subida no fragmenta.** `mayorBloque` se quedó clavado en 25,588 B
+  durante doce subidas seguidas, sin moverse un byte, y el heap libre osciló entre
+  86,948 y 87,380. Es la misma propiedad que ya tenía el driver de SD.
+- **Los 42,996 tras el `malloc` no son 110,580 − 65,536 = 45,044.** Los ~2 KB de
+  diferencia son cabecera y alineación del asignador. Poco, pero explica por qué la
+  resta a mano no cuadra al comprobarlo.
+
+> **Escribir una sola vez reduce el NÚMERO de ventanas bloqueantes; no saca la escritura de `async_tcp`.** Es la consecuencia que faltaba escribir aquí y la que decide el diseño. Ese último callback y el handler de respuesta corren en el **mismo hilo de prioridad 10**, así que con 241 ms de media para crear el archivo más el append al manifiesto, el bloqueo por foto queda en el orden de los **300 ms**, no en «decenas». Una sola ventana de 300 ms en vez de varias, pero ventana al fin.
+
+Si aun con una sola escritura truena el watchdog, la salida es cola de FreeRTOS + tarea dedicada de escritura y responder `202` en vez de `200`. Es más complejo y solo se paga si hace falta — **no empezar ahí: primero medir.** El criterio de disparo, para no dejarlo a ojo: se escala si durante una tanda real aparece `Task watchdog got triggered` o `Guru Meditation` en el monitor serie, si alguna foto falla con error de red reproducible atribuible al bloqueo, o si el p95 de tiempo por foto supera los 2 s. **Watchdog y conexiones caídas son dos fallos distintos y se anotan por separado.**
+
+#### Medido, 2026-08-07: la escritura en línea aguanta, y no se escala
+
+**43 subidas contra la placa desde la Mac, ninguno de los tres criterios se
+disparó.** Ni un `Task watchdog got triggered`, ni una conexión caída, y el tiempo
+de extremo a extremo por foto quedó en **0.20-1.45 s** con mediana ~0.4 s sobre
+archivos de 32,828 B — el p95 ni se acerca a los 2 s. La cola de FreeRTOS y el
+`202` **no hacen falta**, y esta sección se queda como está.
+
+Los ~300 ms de bloqueo estimados están en el orden correcto, y contra un TWDT de
+5 s sobre las tareas idle no había margen de que trocara. Lo que sí aparece es
+**contención con `loop()`**, y sale como latencia y no como fallo: los picos de
+1.4 s coinciden con una decodificación en curso.
+
+> **El mecanismo de esa contención conviene tenerlo escrito, porque no es
+> evidente y podría haber sido corrupción.** FatFs viene con
+> `FF_FS_REENTRANT = 1` en esta plataforma, o sea que **toma un mutex por
+> volumen**: la escritura de `async_tcp` y la lectura del JPEG que hace `loop()`
+> se serializan en vez de pisarse. El precio es la espera, con
+> `FF_FS_TIMEOUT = CONFIG_FATFS_TIMEOUT_MS = 10000 ms` de tope — o sea que en el
+> peor caso una subida podría esperar 10 s por el volumen y devolver `FR_TIMEOUT`,
+> que aquí sale como `507`. Nunca se observó por encima de 1.45 s, pero el techo
+> existe y es 10× el timeout que la página **no** tiene: el suyo son 10 s también,
+> así que en ese caso extremo los dos vencen a la vez.
 
 Detalle de los endpoints y sus códigos de respuesta en §4 de la especificación funcional.
 

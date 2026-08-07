@@ -21,8 +21,10 @@ Este proyecto se justifica por lo que el producto comercial **no** puede hacer:
   comerciales.
 - Está hecho por quien lo regala.
 
-Costo en componentes nuevos: **$387 MXN** — $261 de pantalla, lector SD y sensor
-de luz, más $126 del ESP32 de reposición.
+Costo en componentes nuevos: **$387 MXN gastados** — $261 de pantalla, lector SD y
+sensor de luz, más $126 del ESP32 de reposición. Quedan **$42** por gastar en un
+BH1750 nuevo: el original se estropeó en el banco después de dar su medición, así
+que el total va camino de **$429**.
 
 ---
 
@@ -69,7 +71,7 @@ Desde la perspectiva de quien lo usa: eligió una foto y funcionó.
 |---|---|---|
 | Procesador | ESP32 DevKit V1 (WROOM, USB-C) | No WROVER: usa GPIO16/17 para PSRAM |
 | Pantalla | ST7796S 3.5" IPS SPI, 320×480 | Bus VSPI |
-| Almacenamiento | Lector SD H95 + microSD 8 GB | Bus HSPI **separado**, obligatorio |
+| Almacenamiento | Lector SD H95 + microSD 8 GB | Bus HSPI **separado**, obligatorio. Driver `sdspi` del IDF, no la librería `SD` |
 | Sensor de luz | BH1750 (GY-302) por I2C | Brillo automático |
 | Indicador | LED RGB cátodo común | Se apaga tras 30 s |
 | Control | Touch capacitivo nativo (T9) | Pad interno a la carcasa, invisible |
@@ -89,6 +91,12 @@ Mapa completo de GPIOs, justificación de cada pin y notas de armado en
 - `ESP32Async/ESPAsyncWebServer` para el servidor y el upload.
 - `WiFiManager` para el portal cautivo, más QR de setup en pantalla.
 - La página de subida es HTML y JavaScript puros, sin dependencias externas.
+- **La tarjeta se monta con el driver `sdspi` de ESP-IDF, no con la librería `SD`
+  de Arduino** — ésta manda CMD59 incondicional y después exige un OCR de un CMD58
+  hecho todavía en estado idle, que estas tarjetas contestan «ocupada». Medido con
+  dos tarjetas. El driver del IDF se envuelve en un `fs::FS` para no perder el
+  streaming sin heap, y **el objeto es `TARJETA`, no `SD`**
+  (`firmware/src/tarjeta.h`).
 
 ```bash
 cd firmware
@@ -109,10 +117,11 @@ pio device monitor       # 115200
     └── banco/       Proyecto APARTE: mock del contrato HTTP sobre ESP32 real
 ```
 
-El **banco** implementa las cinco rutas del contrato sin SD ni display, para
-desarrollar y medir la capa de red contra hardware de verdad. No es la base del
-firmware final, y duplica a mano tres versiones de `platformio.ini` que hay que
-sincronizar.
+El **banco** creció a cuatro envs: el de red implementa las cinco rutas del
+contrato sin SD ni display, y los otros tres prueban el LED, el provisioning de
+WiFiManager, y el display junto con la tarjeta. Sirve para medir contra hardware
+de verdad. No es la base del firmware final, y duplica a mano tres versiones de
+`platformio.ini` que hay que sincronizar.
 
 ---
 
@@ -124,14 +133,14 @@ sincronizar.
 | Toolchain | Verificado, build limpio y reproducible |
 | Página de subida | **Completa** — preparación, recorte y subida |
 | Banco de red | Contrato HTTP corriendo sobre un ESP32 real |
-| Componentes | **$387 por comprar** — pantalla, lector SD, sensor y el ESP32 definitivo |
-| Firmware del marco | Esqueleto con lógica real (LED, touch, brillo); decodificación y subida sin implementar |
+| Componentes | **$387 gastados y en mano** — pantalla, lector SD, sensor y el ESP32 definitivo. Faltan $42 del BH1750 de reposición |
+| Firmware del marco | **Muestra fotos y las recibe.** Manifiesto con reconstrucción, decodificación por bloques, `/upload`, página en PROGMEM y los dos QR. Falta probarlo desde el teléfono |
 | Carcasa | Sin empezar |
 
 ### Lo que ya funciona
 
-La página es la pieza más delicada de la arquitectura y está terminada, salvo el
-empaquetado. Medido en un iPhone 11, sobre Safari de iOS:
+La página es la pieza más delicada de la arquitectura y está **terminada y
+empaquetada**. Medido en un iPhone 11, sobre Safari de iOS:
 
 - Orientación EXIF **verificada, no asumida** — comparando ejes, nunca igualdad de
   píxeles.
@@ -169,14 +178,17 @@ node web/test/correr.js
 
 ### Lo que falta
 
-**Sin hardware nuevo:**
+**Con el teléfono en la mano** — es lo único que queda de esta tanda:
 
-- **Empaquetado de la página**: gzip → array de C en PROGMEM. Son 30.6 KB
-  gzipeados, o sea ~150 KB de fuente de C que cambia entera al tocar una línea —
-  hay que decidir antes si se versiona o se genera en el build.
-- **Nada más.** La medición contra el banco ya se hizo, incluida la pestaña en
-  segundo plano: con el teléfono bloqueado dos minutos, el `fetch` y el reloj del
-  timeout se suspenden juntos y la tanda continúa al desbloquear.
+- **La tanda de 30 fotos desde el iPhone contra el marco.** Contra la Mac ya se
+  midieron 43 subidas sin un solo watchdog ni una conexión caída, a 0.2-1.4 s por
+  foto; falta el teléfono, que es el cliente real.
+- **El recorrido completo de una placa virgen**: QR de setup → portal en español →
+  guardar → QR de uso diario con la IP → abrir la página. Nunca se ha recorrido
+  entero, y es la regla 1 de punta a punta.
+- **El heap con el portal cautivo abierto**, que es el número que decide si el
+  buffer de subida de 64 KB se queda donde está.
+- Si el display tartamudea mientras entra una foto.
 
 **Con los componentes en mano**, y en este orden:
 
@@ -188,9 +200,19 @@ node web/test/correr.js
    `getWiFiIsSaved()` devuelve «sí» sobre una placa sin credenciales si se
    pregunta antes de `WiFi.mode(WIFI_STA)` — un arranque virgen se habría quedado
    sin QR de setup, que es la regla 1. Corregido.
-2. Prueba de tres pasos del pin `BL` del display, pinout del PN2222A, velocidad
-   SPI estable (27 → 40 → 80 MHz) y dirección I2C del BH1750. **Ya no están
-   bloqueados por hardware**: los tres componentes están en mano.
+2. ~~Pin `BL`, pinout del PN2222A, velocidad SPI y dirección I2C del BH1750.~~
+   **Los cinco pendientes cerrados**, y ninguno forzó un cambio de plataforma ni
+   de circuito:
+   - **`BL` es entrada lógica** (Caso B): 1.40 mA a 5 V sobre 100 Ω, o sea ~70×
+     menos que el backlight. Va directo a GPIO19, sin transistor.
+   - **El PN2222A sale del diseño** con el punto anterior, y su pinout deja de
+     importar.
+   - **SPI a 40 MHz.** Las tres frecuencias dieron imagen limpia, 80 MHz
+     incluido; se elige por margen, no por estabilidad.
+   - **BH1750 en `0x23`**, con `ADDR` al aire. El módulo se estropeó después de
+     dar la medición; hay que reponerlo, pero la dirección la fija el pin.
+   - **WiFiManager no panica** con arduino-esp32 3.3.11. Lo que sí salió roto fue
+     `getWiFiIsSaved()`, arriba.
 3. Firmware del marco: manifiesto con reconstrucción, decodificación por bloques,
    brillo por BH1750, toque capacitivo y QR — **incluido el QR de uso diario
    saliendo solo al terminar el provisioning**, porque el toque largo que lo

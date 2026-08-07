@@ -180,8 +180,11 @@ static void cronometrar() {
 // Escaneo I2C a pelo, sin la librería BH1750: la pregunta es en qué dirección
 // responde el módulo, y para eso basta el ACK. Meter la librería aquí añadiría un
 // modo de fallo («no detectado») que no distingue «no está» de «está en 0x5C».
-static void escanearI2C() {
-  Serial.println("[i] escaneando bus I2C (SDA 21, SCL 22)...");
+static uint8_t escanearEn(uint8_t sda, uint8_t scl) {
+  Wire.end();
+  Wire.begin(sda, scl);
+  delay(50);
+  Serial.printf("[i] escaneando con SDA %u, SCL %u...\n", sda, scl);
   uint8_t encontrados = 0;
   for (uint8_t dir = 1; dir < 127; dir++) {
     Wire.beginTransmission(dir);
@@ -193,8 +196,88 @@ static void escanearI2C() {
       Serial.println();
     }
   }
-  if (!encontrados)
-    Serial.println("    nada. Revisa VCC a 3.3 V (NO 5 V), GND, y que SDA y SCL no estén cruzados.");
+  return encontrados;
+}
+
+// Recuperación de un bus I2C TRABADO — 9 pulsos de reloj y un STOP.
+//
+// Un esclavo interrumpido a media transferencia se queda esperando los relojes que
+// le faltan y mantiene SDA BAJO todo ese tiempo. Resetear el ESP32 NO lo arregla:
+// quien sujeta la línea es el esclavo, no el maestro. Solo lo suelta terminando de
+// darle los relojes del byte, o quitándole la alimentación.
+//
+// Medido en este banco: tras correr el SPI a 80 MHz el BH1750 quedó así, y siguió
+// trabado a través de un reset Y de un reflasheo a 40 MHz.
+//
+// Lo PRIMERO que imprime son los niveles en reposo, que es el diagnóstico de
+// verdad: si SDA ya está alto, el bus NO está trabado y el problema es otro —un
+// cable suelto o el sensor muerto— y los pulsos no van a arreglar nada.
+static bool recuperarI2C() {
+  Wire.end();
+
+  // pinMode() NO basta: en el ESP32 deja la salida del periférico enrutada por la
+  // matriz de GPIO, así que un I2C atascado manejando SCL bajo lo sigue manejando
+  // y la lectura de abajo mide el periférico en vez del cable. Hay que soltar la
+  // matriz primero. Costó una lectura falsa de «SCL BAJO» averiguarlo.
+  pinMatrixOutDetach(PIN_I2C_SDA, false, false);
+  pinMatrixOutDetach(PIN_I2C_SCL, false, false);
+  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+  pinMode(PIN_I2C_SCL, INPUT_PULLUP);
+  delay(2);   // µs no alcanzan si el cable trae capacidad de protoboard
+
+  Serial.printf("[r] en reposo: SDA %s, SCL %s\n",
+                digitalRead(PIN_I2C_SDA) ? "alto" : "BAJO  <- trabado",
+                digitalRead(PIN_I2C_SCL) ? "alto" : "BAJO  <- trabado");
+
+  uint8_t pulsos = 0;
+  while (digitalRead(PIN_I2C_SDA) == LOW && pulsos < 9) {
+    pinMode(PIN_I2C_SCL, OUTPUT);
+    digitalWrite(PIN_I2C_SCL, LOW);
+    delayMicroseconds(5);
+    pinMode(PIN_I2C_SCL, INPUT_PULLUP);   // soltar, no forzar alto: es colector abierto
+    delayMicroseconds(5);
+    pulsos++;
+  }
+
+  // STOP: SDA de bajo a alto con SCL en alto. Deja al esclavo en estado conocido.
+  pinMode(PIN_I2C_SDA, OUTPUT);
+  digitalWrite(PIN_I2C_SDA, LOW);
+  delayMicroseconds(5);
+  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+  delayMicroseconds(5);
+
+  const bool libre = digitalRead(PIN_I2C_SDA) == HIGH;
+  Serial.printf("[r] %u pulsos -> SDA %s\n", pulsos, libre ? "alto, bus libre" : "SIGUE BAJO");
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  return libre;
+}
+
+// Escanea en el orden del BOM y, si sale vacío, repite con SDA y SCL cambiados.
+//
+// Es la causa más común y la única que un voltímetro NO descarta: con los dos
+// cables invertidos las dos líneas siguen leyendo 3.3 V en reposo, porque las
+// pull-ups del GY-302 están igual. Probarlo por software ahorra el viaje de
+// mover cables, medir y volver a preguntar.
+//
+// Si aparece en el orden invertido, se corrigen LOS CABLES, no el firmware: el
+// mapa del BOM es el que va a acabar soldado.
+static void escanearI2C() {
+  if (escanearEn(PIN_I2C_SDA, PIN_I2C_SCL)) return;
+
+  Serial.println("    nada en el orden del BOM. Probando invertidos...");
+  if (escanearEn(PIN_I2C_SCL, PIN_I2C_SDA)) {
+    Serial.println("    *** SDA y SCL ESTÁN INVERTIDOS. Cambia los cables:");
+    Serial.printf("    ***   SDA del sensor -> GPIO%u,  SCL -> GPIO%u\n",
+                  PIN_I2C_SDA, PIN_I2C_SCL);
+    escanearEn(PIN_I2C_SDA, PIN_I2C_SCL);   // dejar el bus como manda el BOM
+    return;
+  }
+
+  escanearEn(PIN_I2C_SDA, PIN_I2C_SCL);
+  Serial.println("    nada en ninguno de los dos órdenes. Con VCC a 3.3 V y las dos");
+  Serial.println("    líneas en reposo alto, el sospechoso es ADDR flotando a media");
+  Serial.println("    escala: el BH1750 pide <0.3xVCC para 0x23 y >0.7xVCC para 0x5C,");
+  Serial.println("    y en medio no contesta a ninguna. Ata ADDR a GND.");
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -209,6 +292,7 @@ static void menu() {
   Serial.println(F("       (muertas si BL está atado a GND — Caso A sin PN2222A)"));
   Serial.println(F("  v  invierte los colores del panel (¿es IPS y responde?)"));
   Serial.println(F("  i  escanea I2C → dirección del BH1750 (pendiente #4)"));
+  Serial.println(F("  r  niveles en reposo del bus I2C + recuperación de esclavo trabado"));
   Serial.println(F("  p  vuelca la configuración compilada   ·   ?  este menú"));
   Serial.println(F("  Para el pendiente #3: edita SPI_FREQUENCY en platformio.ini"));
   Serial.println(F("  y reflashea. 27 → 40 → 80 MHz. NO se puede cambiar en caliente."));
@@ -222,6 +306,7 @@ static void tecla(char c) {
     case '3': textoPrueba(); break;
     case 'f': cronometrar(); break;
     case 'i': escanearI2C(); break;
+    case 'r': recuperarI2C(); escanearEn(PIN_I2C_SDA, PIN_I2C_SCL); break;
     case 'p': volcarConfig(); break;
 
     case '+': ponerBrillo(brillo > 235 ? 255 : brillo + 20); Serial.printf("[bl] %u\n", brillo); break;

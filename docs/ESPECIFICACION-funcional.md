@@ -670,6 +670,14 @@ Si las barras se metieran al archivo, cambiar de estrategia después obligaría 
 
 Consumo real ≈ buffer del JPEG (12-32 KB según el tamaño de salida, ver §4; 64 KB en el tope duro) + ~4 KB de workspace. **Por esto no hace falta un ESP32-S3**: nunca se arma el framebuffer completo de 300 KB.
 
+#### Cuánto tarda en pintarse una foto — medido
+
+A los **40 MHz** que fijó el pendiente #3, empujar una pantalla completa en bloques MCU de 16×16 —que es exactamente lo que hace `TJpg_Decoder`— cuesta **77 ms**. Medido en placa desde `firmware/banco/` `[env:display]`, sin la decodificación JPEG encima.
+
+De esos 77 ms, **62 son el bus y 15 son sobrecarga por bloque**: 600 `pushImage` por pantalla, cada uno con su `setWindow` y su ciclo de CS, a ~23 µs. Esa parte **no baja al subir la frecuencia** —se midió constante a 27, 40 y 80 MHz— y es la razón por la que correr el SPI más rápido rinde cada vez menos.
+
+Para lo que este proyecto hace, la cifra es holgada: el marco cambia de foto cada varios segundos, así que 77 ms de repintado no se perciben, y ni siquiera los 108 de 27 MHz lo harían. **La velocidad del SPI no es una restricción de este diseño.** Cifras completas de las tres frecuencias en el BOM.
+
 ### Sobre el ejemplo oficial `ESP32_SDcard_jpeg`
 
 Sirve como referencia del patrón — el callback `tft_output(x, y, w, h, bitmap)` que empuja bloques MCU directo al display es la estructura correcta. **Pero no copiarlo tal cual**, tiene dos cosas que este proyecto ya descartó:
@@ -704,6 +712,10 @@ Lo que falta: **histéresis entre los umbrales de lux.** Con el valor de luz osc
 ### Degradación elegante
 
 Si el BH1750 falla, la pantalla se queda en **brillo fijo**, no apagada. Nunca debe quedarse en negro por un sensor descompuesto.
+
+> **Y esto dejó de ser hipotético el 7-ago-2026:** el módulo del banco se estropeó de verdad, en mitad de las pruebas, después de haber respondido correctamente. La rama de degradación se ejercitó en hardware sin que nadie la provocara a propósito — el firmware siguió pintando, que es exactamente lo que la regla 2 pide. La avería y su diagnóstico están en el BOM; el sensor hay que reponerlo, pero no bloquea nada del firmware.
+
+**El backlight se maneja directamente desde GPIO19**, con PWM por LEDC a 5 kHz y 8 bits, en sentido intuitivo — duty alto es más brillo. **Sin transistor**: el pin `BL` del AR3952 resultó ser una entrada lógica de ~3.17 kΩ que pasa 0.88 mA a 3.3 V, y el módulo lleva su propio driver para la corriente del backlight (pendiente #1, cerrado). Verificado de vista que la atenuación es gradual, sin parpadeo, y que en duty 0 el backlight se apaga por completo.
 
 ### Por qué no un sensor de presencia
 
@@ -917,8 +929,8 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 6. ~~**Provisioning de extremo a extremo (pendiente #5).**~~ **Hecho, 6-ago-2026.** Iba primero por ser lo único capaz de forzar un cambio de plataforma, y no lo fuerza: el panic del issue #1797 no ocurre. Se probó en dos etapas para separar «es la librería» de «es la presión de heap» — `firmware/banco/` `[env:wifi]` con WiFiManager y el LED a solas, y `[env:marco]` con los cinco globales ya construidos. De ahí salió el fallo real, que era otro: `getWiFiIsSaved()` mintiendo antes de `WiFi.mode(WIFI_STA)`, corregido. Cifras en el pendiente #5 del BOM.
 7. ~~**Prueba del pin `BL`.**~~ **Hecho, 6-ago-2026. Caso B: entrada lógica.** Con 100 Ω en serie, el pin pasa **1.40 mA a 5 V** y **0.88 mA a 3.3 V** —o sea 3.17 kΩ de impedancia de entrada por ajuste de dos puntos— mientras el panel enciende brillante. Esa corriente es ~70× menor que la del backlight, así que la potencia sale de `VIN` por un driver del módulo y `BL` solo lo gobierna. **`BL` va directo a GPIO19, con PWM por LEDC y sin transistor.** Cifras y método en el BOM.
 8. ~~Confirmar pinout del PN2222A (zócalo hFE).~~ **Desaparece con el punto 7:** el transistor sale del diseño del backlight, junto con sus 470 Ω de base y el 10 kΩ.
-9. Afinar velocidad SPI (27 → 40 → 80 MHz).
-10. Confirmar dirección I2C del BH1750.
+9. ~~Afinar velocidad SPI (27 → 40 → 80 MHz).~~ **Hecho, 7-ago-2026: 40 MHz.** Los tres binarios dieron **imagen limpia**, 80 MHz incluido, así que la elección no fue de estabilidad sino de margen: repintar una foto cuesta 77 ms a 40 MHz contra 45 a 80, y eso es invisible en un marco que cambia de imagen cada varios segundos. Tabla completa en el BOM.
+10. ~~Confirmar dirección I2C del BH1750.~~ **Hecho, 6-ago-2026: `0x23`**, con `ADDR` al aire, que es lo que asumía §7. Escaneo desde `[env:display]`. De paso salió que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
 11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.
 12. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama, y el contrato ya está entero: `/list` y `/photo` bastan, no hacen falta endpoints nuevos. Va después de probar el marco completo con todos los componentes integrados. Tiene que mostrar **todas** las fotos de la tarjeta y dejar quitar cualquiera; el objetivo es **curación, no espacio** —la capacidad dejó de ser restricción en §3— y las dos trampas del borrado, más el `Content-Type` del cuerpo, están en §4.
 13. Integración y modelado de la carcasa.

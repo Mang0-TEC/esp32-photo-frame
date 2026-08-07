@@ -2,7 +2,7 @@
 
 **Proyecto:** Marco de fotos digital con servidor local WiFi
 **Presupuesto objetivo:** $700 MXN
-**Costo real a comprar:** $261 MXN
+**Gastado:** $387 MXN · **Pendiente de comprar:** $42 MXN
 
 ---
 
@@ -10,18 +10,25 @@
 
 | # | Componente | SKU | Proveedor | Cant. | Precio |
 |---|---|---|---|---|---|
-| 1 | Módulo TFT ST7796S 3.5" IPS 320×480 SPI | AR3952 | Unit Electronics | 1 | $196 |
-| 2 | Lector de Memorias SD H95 | AR0532 | Unit Electronics | 1 | $23 |
-| 3 | GY-302 Sensor de intensidad luminosa BH1750 | — | Unit Electronics | 1 | $42 |
-| | **Subtotal** | | | | **$261** |
+| 3b | GY-302 BH1750 — **reposición** | — | Unit Electronics | 1 | $42 |
+| | **Subtotal** | | | | **$42** |
 
-**El ESP32 de reposición ya se compró** y pasó a la tabla B (fila 16). Estaba
-aquí porque la unidad USB-C que había resultó defectuosa — no transmitía ni
-sincronizaba con esptool, ni en macOS ni en Windows, pese a 3.3 V correctos, `EN`
-liberado y loopback TX0↔RX0 exitoso. Ese diagnóstico sigue cerrado: la unidad
-nueva es **otra placa física**, con puente y revisión de silicio distintos, no la
-misma que volvió a probarse. Con la compra hecha, el pendiente vuelve a los $261
-de pantalla, lector y sensor.
+**Todo lo demás ya se compró.** Pantalla, lector SD y sensor —los $261 de la
+tabla original— están en mano, y el ESP32 de reposición ($126) pasó a la tabla B.
+Total gastado: **$387**.
+
+**Por qué hay un BH1750 otra vez aquí.** El módulo comprado **se estropeó en el
+banco el 7-ago-2026**, después de haber respondido en `0x23` y cerrado el
+pendiente #4. Causa indeterminada; la avería está dentro del módulo y el
+diagnóstico completo está en la sección del BH1750, más abajo. **No bloquea el
+firmware**: la dirección ya está medida y §7 exige que sin sensor el marco se
+quede a brillo fijo, nunca en negro.
+
+**El ESP32 de reposición** estuvo en esta tabla porque la unidad USB-C que había
+resultó defectuosa — no transmitía ni sincronizaba con esptool, ni en macOS ni en
+Windows, pese a 3.3 V correctos, `EN` liberado y loopback TX0↔RX0 exitoso. Ese
+diagnóstico sigue cerrado: la unidad nueva es **otra placa física**, con puente y
+revisión de silicio distintos, no la misma que volvió a probarse.
 
 **Debe ser WROOM, no WROVER.** La WROVER ocupa GPIO16 y GPIO17 con la PSRAM, y
 ahí van `RST` y `DC` del display. **Confirmado WROOM en la unidad nueva**, medido
@@ -192,9 +199,11 @@ Prende en los dos, y con un potenciómetro en serie la atenuación se distingue 
 - **El pendiente #2 desaparece**, y con él el PN2222A del circuito del backlight. Ver abajo.
 - El backlight se alimenta de `VIN` (5 V) a través del driver del módulo, que es lo que este BOM ya especificaba para el riel de 5 V.
 
-**Lo que el voltímetro no puede contestar y queda para el banco:** si el brillo a 3.3 V iguala al de 5 V. Con 0.88 mA de excitación y una beta de 100 el driver satura ~88 mA, y con 200 llega a 176 — o sea que *debería* estar saturado, pero eso es cálculo con una beta supuesta y el criterio real es el ojo. Se resuelve al primer arranque de `[env:display]` con las teclas `9` y `0`, en la configuración de producción y no en el banco de cables.
+**Confirmado también de vista, desde `[env:display]` con GPIO19 haciendo el PWM:** la atenuación se ve **gradual y sin parpadeo** a lo largo de toda la escalera, y en duty 0 el backlight queda **completamente apagado**. O sea que el driver del módulo satura con los 0.88 mA que da un GPIO a 3.3 V, que era lo único que el voltímetro no podía contestar. `ledcAttach(19, 5000, 8)` y `ledcWrite` en sentido intuitivo, sin invertir.
 
-**Tampoco se ha comprobado el arranque en frío con `BL` al aire.** Sin corriente de base el backlight debería quedar apagado, que es lo que `display.cpp` asume al poner el brillo a 0 antes de `tft.begin()`. Si resultara que enciende, hay destello a pantalla llena en cada encendido del marco mientras GPIO19 flota, y eso es regla 3.
+> La escalera del banco se recorre de 20 en 20 y a ese paso el salto **se siente brusco**. No es representativo: la rampa de producción avanza **un paso de PWM por lectura del BH1750** (§7), no veinte.
+
+**Y el arranque en frío con `BL` al aire no puede dar destello**, por lo que ya está medido arriba: al aplicar 3.3 V la corriente **entra** al pin. Con un pull-up hacia VCC no entraría, saldría. Que entre significa que `BL` la drena hacia una base o un pull-down, así que con GPIO19 flotando no hay excitación y el backlight queda apagado — que es justo lo que `display.cpp` asume al poner el brillo a 0 antes de `tft.begin()`. Es inferencia de dos medidas, no observación directa; confirmarlo cuesta desconectar `BL` y enchufar, y no bloquea nada.
 
 **Notas del procedimiento**, por si hay que repetirlo con otro módulo: en cuarto oscuro y mirando el **canto** del módulo, no el frente — con el ST7796S sin inicializar el panel puede quedar opaco y el backlight solo se ve como fuga de luz en los bordes. El riel del paso 3 sale del pin del propio devkit, con el devkit alimentado, para compartir referencia de tierra. Ninguno de los pasos daña nada.
 
@@ -499,7 +508,32 @@ file:///…/web/index.html#marco=http://192.168.100.175
 
 Va en el **fragmento** a propósito: no viaja al servidor, y por lo tanto no puede colarse como una ruta que el `onNotFound` tendría que atender. Ese camino exige compilar el banco con `-D BANCO_CORS`, que es una cabecera de banco y **no puede sobrevivir al firmware final**.
 
-**Afinación de `SPI_FREQUENCY`:** arrancar en 27 MHz para las primeras pruebas. Con imagen estable, subir a 40 y luego a 80. Si aparecen líneas o píxeles corridos, bajar un escalón. Es empírico y depende del largo de los cables.
+### `SPI_FREQUENCY` — pendiente #3 CERRADO, 2026-08-07: **40 MHz**
+
+Medido en placa con `[env:display]`, tres binarios, sobre jumpers de protoboard. `fillScreen` de 10 pantallas cronometradas, y la misma pantalla recorrida en bloques de 16×16 —600 `pushImage`— que es el camino real de `TJpg_Decoder`:
+
+| Nominal | Real en el silicio | ms/pantalla | MB/s | % del techo | En bloques 16×16 | Sobrecarga | Imagen |
+|---|---|---|---|---|---|---|---|
+| 27 MHz | 26.67 (80/3) | 93.2 | 3.30 | 98.9 % | 108 ms · 1.16× | 14.8 ms | limpia |
+| **40 MHz** | **40.0** | **62.3** | **4.93** | **98.6 %** | **77 ms · 1.24×** | **14.7 ms** | **limpia** |
+| 80 MHz | 80.0 | 31.6 | 9.72 | 97.2 % | 45 ms · 1.42× | 13.4 ms | limpia |
+
+**El SPI nunca fue el cuello.** El bus escala al 97-99 % de su techo teórico en las tres frecuencias, y `SPI_FREQUENCY=27000000` corre de verdad a **26.67 MHz** porque el reloj sale de dividir los 80 MHz del APB entre un entero — por eso el techo calculado del macro nominal queda ~1.3 % optimista solo en esa fila.
+
+**Lo que no escala es la sobrecarga por transacción: 14.8 / 14.7 / 13.4 ms**, o sea ~23 µs por bloque de `setWindow` más ciclo de CS. Es CPU y protocolo, no bus, y por eso el factor sube de 1.16× a 1.42×: a 80 MHz ya es un tercio del camino de producción. Confirmado por una tercera vía, el patrón de rayas: 320 `drawFastVLine` cuestan 99 / 67 / 36 ms, con la misma sobrecarga fija encima del tiempo de bus.
+
+**Los tres patrones salieron limpios en las tres frecuencias**, verificado de vista: rayas verticales de 1 px sin bandas ni cambios de fase, ocho barras planas en su orden correcto, y texto con rejilla y borde rojo de 1 px completo en los cuatro cantos. **Ni siquiera 80 MHz falló.**
+
+**Entonces por qué 40 y no 80.** Porque la elección no es de velocidad: repintar una foto entera cuesta **77 ms a 40 MHz contra 45 a 80**, y en un marco que cambia de imagen cada varios segundos esa diferencia **no la percibe nadie**. Se toma el escalón que duplica el margen sobre los 27 MHz sin acercarse al límite del cableado. Pagar riesgo de integridad de señal por 32 ms invisibles es un mal negocio.
+
+> **El resultado vale para el cableado con el que se midió** — jumpers de protoboard. El montaje final es UTP soldado y corto, que solo puede ir mejor. Si alguna vez se quiere reabrir esto, se repite el barrido con el cableado definitivo; el banco y los tres binarios siguen ahí.
+
+**El panel NO necesita `TFT_INVERSION_ON`.** Era la sospecha más probable cuando el primer arranque salió raro, y quedó descartada por medición: la polaridad de fábrica de esta unidad es la correcta, y `tft.invertDisplay()` —la tecla `v` del banco— produce el complemento exacto de cada color, así que el control funciona y el valor por defecto es el bueno. TFT_eSPI no envía `INVON` ni `INVOFF` en el init del ST7796 salvo que se le declare el flag (`TFT_eSPI.cpp:774`), o sea que el panel se queda con su polaridad de fábrica.
+
+> **Dos confusores que hay que quitar ANTES de barrer, o se anotan como límite del bus.**
+>
+> 1. **Desacoplo.** El backlight conmuta ~100 mA a 5 kHz por PWM, y un riel que se hunde produce **líneas y píxeles corridos** — exactamente el síntoma con el que se juzga «el SPI va demasiado rápido». El **100 nF cerámico pegado a los pines `VCC`/`GND` del display** va puesto desde la primera medición, no a mitad del barrido: es el que atiende los flancos, que es lo que importa aquí. El electrolítico de 100 µF **es el del lector SD** y no hace falta para un banco de solo display; se le puede prestar mientras la SD no esté conectada, pero es préstamo y no un capacitor adicional — en inventario hay uno solo.
+> 2. **El cableado con el que se mide.** La frecuencia máxima estable depende del largo de los hilos y de si van trenzados con un retorno de tierra. Medir con jumpers largos sueltos y luego soldar UTP corto deja el resultado **pesimista**; al revés, optimista y con corrupción que aparece ya montado. Medir con hilos parecidos a los definitivos, o anotar con cuáles se midió.
 
 ### Nunca escribir a la SD desde el callback de upload
 
@@ -604,12 +638,38 @@ La tarjeta física ya se preparó y se midió, no solo se asumió de la ficha:
 | Parámetro | Valor |
 |---|---|
 | Interfaz | I2C |
-| Dirección | `0x23` (ADDR al aire o a GND) / `0x5C` (ADDR a VCC) |
+| Dirección | **`0x23` — medido**, con `ADDR` al aire. (`0x5C` si `ADDR` va a VCC) |
 | Rango | 1 – 65,535 lux |
 | Alimentación | 3.3 V |
 | Librería | `BH1750` de claws |
 
 El rango cubre desde cuarto casi a oscuras hasta luz de día directa — exactamente la curva necesaria para control de brillo.
+
+> **Un voltímetro NO detecta `SDA` y `SCL` intercambiados, y esto costó un rato.** Con los dos cables cambiados el bus se ve perfecto: `VCC` a 3.2 V y las dos líneas en reposo a 3.14 y 3.18 V, porque las pull-ups de 4.7 kΩ del GY-302 están ahí igual en cualquier orden. El escaneo simplemente no encuentra nada y las tres medidas obvias salen bien.
+>
+> Por eso `escanearI2C()` del banco **escanea en los dos órdenes**: primero el del BOM y, si sale vacío, con `SDA` y `SCL` cambiados. Si aparece en el segundo, lo dice y avisa de corregir **los cables, no el firmware** — el mapa del BOM es el que va a acabar soldado, y `main.cpp` tiene `Wire.begin(21, 22)`. Fue exactamente lo que pasó al conectarlo la primera vez.
+>
+> El otro sospechoso cuando el bus está sano y no contesta nadie es **`ADDR` flotando a media escala**: el BH1750 pide <0.3×VCC para `0x23` y >0.7×VCC para `0x5C`, y en medio no responde a ninguna de las dos. Se ata `ADDR` a GND. No hizo falta aquí — al aire dio `0x23` — pero el banco lo sugiere si los dos órdenes salen vacíos.
+
+#### El módulo se estropeó en el banco, 2026-08-07 — hay que reponerlo
+
+Después de dar su medición y responder en `0x23` dos veces, el GY-302 dejó de aparecer en el bus y **no volvió**. Causa **indeterminada**: no se sabe si llegó tocado, si se dañó durante la sesión, o qué lo dañó. Se llegó a sospechar del barrido a 80 MHz y **esa hipótesis se retiró** — ninguna medida la sostiene, y el escaneo I2C no se capturó en la corrida de 40 MHz previa, así que ni siquiera está acotado el momento en que dejó de funcionar.
+
+**La avería está dentro del módulo**, y esto sí es concluyente:
+
+| Se comprobó | Qué descarta |
+|---|---|
+| El síntoma no cambia al moverlo a otras filas del protoboard | el protoboard |
+| Header soldado y pines en su posición | el montaje |
+| `VCC` a **3.25 V** en el pin del propio módulo | la alimentación que le llega |
+| Con el módulo fuera, las dos líneas leen alto | GPIO21/22, los jumpers y las filas |
+| Con el módulo dentro, `SCL` y `SDA` clavados en **0.72 V** y **1.04 V** | — |
+
+**Esa última fila es la firma, y es la técnica que vale la pena guardar: una línea clavada en ~0.7 V NO es un nivel lógico bajo, es una caída de diodo.** Si el chip aterrizara la línea de verdad, con la pull-up interna de 45 kΩ del ESP32 se leerían casi 0 V. Los 0.72 V son una unión de silicio conduciendo ~56 µA: la pull-up está metiendo corriente por el **diodo de protección** del pin hacia el riel interno del chip. Y un diodo de protección solo conduce en ese sentido cuando **ese riel está por debajo del pin**. O sea que el pin `VCC` del módulo tiene 3.25 V pero el `VDD` del BH1750 no los tiene: la rotura está entre uno y otro —regulador de a bordo, pista, o el chip— y no en nada externo.
+
+> Antes de tirarlo: si el módulo lleva un **SOT-23 de tres patas** (regulador tipo 662K o XC6206), medir su salida contra GND. Entrada con 3.25 V y salida sin ellos = regulador muerto y chip sano. Las dos con 3.25 V = es el chip.
+
+**No bloquea nada.** `0x23` ya está medido y la dirección la fija el pin `ADDR`, no la salud del chip, así que un módulo nuevo dará lo mismo. Y §7 ya exige que sin BH1750 el marco se quede a brillo fijo y nunca en negro — `main.cpp` lo implementa, y esta avería lo ejercitó en hardware sin querer.
 
 ---
 
@@ -619,11 +679,13 @@ El rango cubre desde cuarto casi a oscuras hasta luz de día directa — exactam
 |---|---|---|
 | 1 | ~~Tipo de pin `BL` (Caso A o B)~~ | **CERRADO 6-ago-2026. Caso B**, entrada lógica: 1.40 mA a 5 V y 0.88 mA a 3.3 V sobre 100 Ω. GPIO19 directo, sin transistor. Arriba |
 | 2 | ~~Pinout emisor/colector del PN2222A~~ | **CERRADO por irrelevancia**, mismo día: el Caso B saca al transistor del diseño. Arriba |
-| 3 | Velocidad SPI máxima estable | Empírico: 27 → 40 → 80 MHz, tres binarios de `firmware/banco/` `[env:display]` |
-| 4 | Dirección I2C del BH1750 | Escaneo I2C del mismo env; casi seguro `0x23` |
+| 3 | ~~Velocidad SPI máxima estable~~ | **CERRADO 7-ago-2026: 40 MHz.** Las tres dieron imagen limpia; se elige por margen, no por velocidad. Tabla completa arriba |
+| 4 | ~~Dirección I2C del BH1750~~ | **CERRADO 6-ago-2026: `0x23`**, lo que se esperaba. Escaneo de `[env:display]`, con `SDA` en 21 y `SCL` en 22 |
 | 5 | ~~WiFiManager con arduino-esp32 ≥3.1.0~~ | **CERRADO 6-ago-2026.** No panica. Ver abajo |
 
-Los dos que quedan no bloquean el desarrollo del firmware — son constantes que se ajustan al final, y los dos se miden con el mismo binario. Ya no hay ningún pendiente capaz de forzar un cambio de plataforma ni de circuito.
+**Los cinco pendientes están cerrados.** Ninguno forzó un cambio de plataforma ni de circuito, y dos —el transistor del backlight y el pinout del PN2222A— desaparecieron del diseño en vez de resolverse.
+
+Lo único que queda de esta tanda no es un pendiente sino una compra: **el BH1750 se estropeó en el banco después de dar su medición**, y hay que reponerlo. Detalle abajo, en la sección del sensor.
 
 **Quedan dos comprobaciones visuales pegadas al #1**, que un multímetro no puede dar y que salen gratis al arrancar `[env:display]` por primera vez: que el brillo a 3.3 V iguale al de 5 V (teclas `9` y `0`), y que con `BL` al aire el backlight arranque **apagado**, sin destello mientras GPIO19 flota. Detalle arriba.
 

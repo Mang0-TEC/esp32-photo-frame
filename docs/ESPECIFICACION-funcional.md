@@ -251,6 +251,28 @@ Desde la perspectiva de quien lo usa, simplemente eligió fotos y funcionaron. E
 
 Se eligen N fotos de golpe y **todas entran completas**, con barras negras si su proporción no es la del marco. Ninguna se recorta sin que alguien lo pida: tocar una miniatura abre el editor de recuadro para esa foto en particular, y solo esa.
 
+#### Corrección, 7-ago-2026: el auto-llenado cuando el recorte es pequeño y seguro
+
+**Visto sobre el panel real, «entra completa» no aguantó.** Una vertical 3:4 de celular —el caso dominante— sale en 320×427 y deja 53 px negros repartidos arriba y abajo. Sobre la mesa eso es «el 11 % del alto»; en el marco **se ven**, y es lo primero que se nota. La regla pasa a ser:
+
+| Foto | Recorte que pide | Qué hace la página |
+|---|---|---|
+| **3:4 vertical (celular)** | 11.1 % del **ancho** | **auto-llena** |
+| **9:16 vertical** | 15.6 % del **alto** | **auto-llena** |
+| 2:3 vertical | ninguno | nada, ya llena |
+| 19.5:9 (captura) | 30.8 % del alto | franjas + aviso |
+| 4:3 horizontal | 50 % del ancho | franjas + aviso |
+
+**Una sola guarda, el umbral, y esto fue una corrección sobre la primera versión.** Al principio se prohibía además cualquier recorte del **alto**, por el veto de más abajo al recorte automático. **Medir la fototeca real lo tumbó**: de 29 fotos subidas desde el iPhone, **17 eran 9:16** y solo 8 llenaban. O sea que el caso dominante no es la 3:4 —que es lo que se supuso— sino la 9:16, y dejarla fuera mantenía las franjas justo donde se querían quitar.
+
+**El veto de §4 sigue vivo donde importa.** Lo que prohíbe es el recorte automático **grande** y en silencio: media foto sigue sin tocarse, y una captura de pantalla tampoco. Lo que se acepta a cambio es que **7.8 % del alto por lado puede rozar una cabeza en un retrato muy justo**. Se tomó con los números delante, y el editor sigue a un toque para rehacer el encuadre.
+
+El umbral es `AVISO_BARRAS` (20 %), reutilizado a propósito: es la misma pregunta —«¿esta franja es lo bastante grande como para que importe?»— y dos constantes que responden lo mismo acaban divergiendo. Si algún día se separan, ojo: las dos fracciones no son idénticas para la misma foto (una 3:4 deja 11.04 % de franja y pide 11.11 % de recorte).
+
+**El auto-llenado NO es un `item.recorte`.** No lo decidió quien sube, así que no enciende «Quitar recorte», no cuenta como recorte en el diagnóstico y no cambia nada del editor — que además arranca justo en esa misma caja. Vive en `autoLlenar()`, `web/index.html`, aplicado como rectángulo fuente dentro de `procesar()`.
+
+**Y tiene un costo que hay que tener presente:** recortar sube el peso, así que la 3:4 pasa de un objetivo de 28.5 KB a los 32,768 B completos. Con el auto-llenado eso deja de ser la excepción y pasa a ser el caso normal: **la tanda entera pesa más y se acerca al tope duro de 64 KB**, cuyo margen contra el récord medido ya es de solo 1.06× (ver el BOM).
+
 **Por qué el default es entrar completa y no recortar al centro.** Un recorte automático decapita gente en las verticales y se come los extremos de las horizontales, en silencio, sin que nadie lo haya pedido y sin que se note en una miniatura de teléfono. Perder pantalla es reversible con un toque; perder la cabeza de alguien no se descubre hasta que el marco ya está en la sala. Y el aviso de barras de §6 no tendría nada que avisar: con recorte automático no habría barras nunca, y media §6 quedaría sin objeto.
 
 **Lo que tampoco puede existir es la obligación de recortar.** Pedir un recuadro manual por cada una de 30 fotos de un viaje convertiría la subida en una tarea. El editor está a un toque de distancia y ahí se queda: quien no lo toque sube 30 fotos completas y el marco funciona.
@@ -428,7 +450,7 @@ Misma entrada, misma salida, y en Safari pesa **1.74× más con menos calidad**.
 Dos puntos, y ninguno bloquea la construcción:
 
 - **EXIF = 5 (transpose) está verificado solo en Chromium.** Es espejo diagonal, no solo rotación, y el arnés comprueba el intercambio de ejes pero **no** el reflejo — un navegador que rotara sin reflejar daría veredicto verde igualmente, en cualquier motor. El panel lo marca como «reflejo SIN verificar» para que no se lea como una comprobación que no es. Limitación conocida del arnés, no del pipeline. Lo medido en Safari de iOS son dos fotos con EXIF 6; ninguna con 5.
-- **Calidad a q = 0.620 sobre la pantalla real.** Hay tres casos medidos detrás, y el suelo no es raro: `IMG_1473` (tirol blanco, 40.3 KB contra 28.5 de presupuesto), una malla metálica perforada (43.0 KB) y un perro sobre césped (**50.7 KB**, el récord). Los tres son textura fina en todo el encuadre. Puede haber bloqueo visible. **El hardware ya llegó y el pipeline ya pinta las siete fotos de prueba en placa (§6), así que esto dejó de esperar a nadie: es un juicio visual pendiente de ejecutarse** sobre el ST7796S, con una de esas tres fotos en la tarjeta. No tiene sentido evaluarlo en un monitor.
+- **Calidad a q = 0.620 sobre la pantalla real.** Hay tres casos medidos detrás, y el suelo no es raro: `IMG_1473` (tirol blanco, 40.3 KB contra 28.5 de presupuesto), una malla metálica perforada (43.0 KB), un perro sobre césped (50.7 KB) y **60.4 KB**, el récord del 7-ago-2026 dentro de una tanda normal de 30 — a solo 1.06× del tope duro de 64 KB, ver el BOM. Los tres son textura fina en todo el encuadre. Puede haber bloqueo visible. **El hardware ya llegó y el pipeline ya pinta las siete fotos de prueba en placa (§6), así que esto dejó de esperar a nadie: es un juicio visual pendiente de ejecutarse** sobre el ST7796S, con una de esas tres fotos en la tarjeta. No tiene sentido evaluarlo en un monitor.
 
 #### El subsampling: nota de alcance, no pendiente
 
@@ -610,11 +632,50 @@ Se acepta tal cual. Arreglarlo obligaría a resubir la tanda entera por una foto
 
 **La base del servidor es `""` — mismo origen — y ese es el valor de producción.** La compuerta que decide si los botones de subir existen se compara **contra `null`, jamás por veracidad**: `""` es *falsy*, y un `if (base)` apagaría los botones justo en el marco, que es el único sitio donde tienen que estar. Abierta a mano desde el disco (`file://`) la página se cae sola a `null`, o sea al modo mock donde «Guardar JPEG» es la acción; y bajo diagnóstico se puede apuntar a otra máquina por el **fragmento** de la URL, que no viaja al servidor.
 
-#### Pendiente: la galería de lo ya cargado, y borrar
+#### La galería de lo ya cargado, y borrar — HECHO, 7-ago-2026
 
-`POST /delete` está en el contrato y **todavía no lo llama nadie**. Quitar de la tanda una foto ya subida la saca de esta pantalla pero no del marco, y el texto de la confirmación lo dice. Borrar de verdad llega con la galería, cuando estén todos los componentes integrados y probados.
+`POST /delete` era la única ruta del contrato que no llamaba nadie. Ya la llama la galería, que muestra **todas** las fotos de la tarjeta —no solo la tanda en curso— y deja quitar cualquiera. Verificado en placa: `200`, `400` con `../manifest.txt`, `400` con un POST sin cuerpo, y `200` idempotente sobre un nombre válido que ya no existe.
 
-**Qué tiene que hacer la galería**, que hoy la página no puede: mostrar **todas** las fotos que ya están en la tarjeta —no solo la tanda en curso— y dejar quitar cualquiera de ellas.
+**Sin endpoints nuevos y sin dependencias nuevas.** `/list` y `/photo` bastaban, y el cuerpo JSON se lee con `strstr`/`strchr` como en el banco — ocho líneas, cero heap, cero parser, que es el mismo argumento con el que §3 justifica el manifiesto en texto plano. **ArduinoJson se evaluó y se descartó**: una octava dependencia del stack para leer una clave de formato fijo en un cuerpo de 30 B.
+
+**La galería pagina de 60 en 60.** No es capricho: §4 mide que 30 bitmaps de 320×480 son ~18 MB vivos, y de ahí sale `MAX_TANDA`. Una galería de cientos sin acotar es el mismo problema multiplicado, y `loading="lazy"` ahorra la red pero no garantiza que el navegador suelte lo que sale de pantalla.
+
+**Multi-selección y una sola confirmación**, porque el caso que esta sección nombra —«las diez de aquel viaje»— con una confirmación por foto serían diez. El borrado es **secuencial, concurrencia 1**: cada `/delete` reescribe el manifiesto entero en el marco, y dos a la vez sobre el mismo archivo es pedir corrupción. Misma disciplina que la subida, y el arnés lo comprueba contando peticiones en vuelo.
+
+Cuatro detalles de implementación que no se deducen:
+
+- **El botón de entrada NO puede vivir en `.actions`.** `pintarBarra()` oculta `#cardAcciones` cuando la tanda está vacía — y entrar sin tanda es exactamente el caso de venir solo a curar. Va en la tarjeta del selector, la única siempre visible. Se apaga con la misma compuerta `CFG.BASE === null` que los botones de subir.
+- **Los mosaicos de la galería son `<div>`, no `<button>`.** Los de la tanda sí son botones, y anidar un botón dentro de otro es HTML inválido además de hacer burbujear el click. `.mosaico` es solo CSS.
+- **Sigue habiendo UN solo listener de `popstate`.** Se le añadió la rama de la galería **antes** de la delegación a `cerrarDetalle(true)`, porque el guard de esa función la convierte en no-op y dejaría la galería montada. Un segundo `addEventListener` haría disparar los dos en cada gesto de atrás.
+- **La galería copia el patrón del editor, no el del detalle**: `cerrarGaleria()` solo desmonta y son los botones los que navegan. Con más de un nivel, que la función de cierre llame a `history.back()` hace que su propio `popstate` cierre también el nivel de abajo.
+
+##### La galería tiró el marco, y la causa no era la que gritaban los logs
+
+**Primera versión medida en placa: el marco se reiniciaba en bucle** al abrir la galería desde el teléfono. En pantalla, «No hay fotos»; en la página, «el marco no tiene fotos» sobre una tarjeta con 30. El serie escupía `no free file descriptors`, y **seguir esa pista fue el error**.
+
+El backtrace decodificado dice otra cosa:
+
+```
+operator new → __cxa_allocate_exception → std::terminate → abort
+  AsyncWebServerRequest::beginResponse  (WebRequest.cpp:1202)
+```
+
+Es **heap**: `new` falla y no queda memoria ni para construir el `bad_alloc`, así que sale un `abort()`. Los descriptores agotados son el síntoma de que hay demasiadas peticiones vivas, no la causa de la caída.
+
+**Subir `max_files` del VFS empeoró el fallo, y ésa es la lección cara.** Cada descriptor de FatFs arrastra su buffer de sector: pasar de 5 a 12 costó **~30 KB de heap** medidos —el libre antes de `autoConnect()` cayó de 110,324 a 80,644 B— y con menos heap el marco pasó de caerse con ~30 conexiones a caerse **con 4**. Se revirtió.
+
+**La defensa es un tope de peticiones concurrentes**, no de archivos abiertos: `PHOTO_MAX_VUELO = 2`, contador `volatile` y `onDisconnect` devolviendo el hueco, con `503` por encima —barato, antes de asignar nada grande—. Y no hay alternativa desde el servidor: `ESPAsyncWebServer` solo expone `maxClients` para WebSocket, y el tope real de conexiones vive en `MEMP_NUM_TCP_PCB` de LWIP, dentro de los binarios precompilados del IDF, igual que `FF_FS_EXFAT`.
+
+**Medido después del arreglo: 30 peticiones simultáneas dan 12 `200` y 18 `503`, cero caídas**, y `loop()` sigue pintando con `heap +0`.
+
+Del lado de la página, dos cosas que se derivan:
+
+- **La galería carga de 2 en 2** (`GALERIA_EN_VUELO`). `loading="lazy"` **no sirve** para esto: decide por visibilidad, no por concurrencia, y en una rejilla de tres columnas ya hay una docena de mosaicos a la vista.
+- **El `503` hay que reintentarlo de verdad.** Un `<img>` que falla se queda roto para siempre, porque en cuanto tiene `src` sale de la cola. Se le quita el `src` y se reencola, hasta tres veces, con espera creciente.
+
+Y una corrección de `/list` que salió de aquí: **distinguir «no hay manifiesto» de «no se pudo abrir»**. Tratarlos igual es lo que hacía mentir a la página — con el heap agotado contestaba `200` con cuerpo vacío. Ahora `exists()` decide: sin manifiesto, `200` vacío, que es un estado legítimo; con manifiesto ilegible, `503`, que es transitorio y reintentable.
+
+> **El `Content-Type: application/json` no es safelisted, y eso acota dónde se puede probar.** Sobre mismo origen —el valor de producción— da igual; desde otro origen dispara un `OPTIONS` que, con cinco rutas y sin catch-all, cae en `onNotFound` → 404. O sea que **la galería no se puede probar contra el banco con el override `#marco=`**: se prueba contra el marco real o con el `fetch` sustituido del arnés.
 
 **No hace falta inventar contrato: ya está entero.** `/list` devuelve el manifiesto crudo por streaming, `/photo?n=` sirve cada archivo, y no hay miniaturas que generar porque las fotos pesan 32 KB (arriba, en esta misma sección). La galería es una pantalla nueva en `web/index.html`, no endpoints nuevos.
 
@@ -795,6 +856,8 @@ Son **+78 % de imagen útil** en el caso que más se va a dar.
 | 3:2 horizontal (réflex) | 320×213 | 56 % del alto |
 
 Las 3:2 de réflex pasan de ser el caso perfecto a ser el peor. A cambio, las 2:3 verticales llenan la pantalla con recorte cero.
+
+> **Esa tabla describe el contain puro, y desde el 7-ago-2026 las filas verticales ya no se ven así en el marco.** Las franjas resultaron visibles sobre el panel real, así que la página **auto-llena** cuando el recorte que hace falta está por debajo del 20 %: la 3:4 (11.1 % del ancho) y la **9:16** (15.6 % del alto) salen en 320×480 sin franjas. Las horizontales y la captura 19.5:9 se quedan tal cual, porque pedirían del 30 al 56 %. La regla completa, con su costo en peso, en §4.
 
 **Por eso el recorte manual (§4) sube de mejora opcional a compensación necesaria de esta decisión.** La página avisa en lenguaje llano cuando las barras se comen más del 20 % de un eje, y el aviso nombra el eje correcto — una captura de pantalla de celular deja barras a los lados, no arriba y abajo.
 
@@ -1157,7 +1220,7 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 9. ~~Afinar velocidad SPI (27 → 40 → 80 MHz).~~ **Hecho, 7-ago-2026: 40 MHz.** Los tres binarios dieron **imagen limpia**, 80 MHz incluido, así que la elección no fue de estabilidad sino de margen: repintar una foto cuesta 77 ms a 40 MHz contra 45 a 80, y eso es invisible en un marco que cambia de imagen cada varios segundos. Tabla completa en el BOM.
 10. ~~Confirmar dirección I2C del BH1750.~~ **Hecho, 6-ago-2026: `0x23`**, con `ADDR` al aire, que es lo que asumía §7. Escaneo desde `[env:display]`. De paso salió que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
 11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.
-12. **Galería de lo ya cargado y `POST /delete`.** Es lo único del contrato HTTP que la página todavía no llama, y el contrato ya está entero: `/list` y `/photo` bastan, no hacen falta endpoints nuevos. Va después de probar el marco completo con todos los componentes integrados. Tiene que mostrar **todas** las fotos de la tarjeta y dejar quitar cualquiera; el objetivo es **curación, no espacio** —la capacidad dejó de ser restricción en §3— y las dos trampas del borrado, más el `Content-Type` del cuerpo, están en §4.
+12. ~~**Galería de lo ya cargado y `POST /delete`.**~~ **Hecho, 7-ago-2026.** Era lo único del contrato HTTP que la página no llamaba. Sin endpoints nuevos —`/list` y `/photo` bastaban— y **sin dependencias nuevas**: el cuerpo JSON se lee con `strstr`/`strchr` como en el banco, y ArduinoJson se descartó. Galería paginada de 60, multi-selección con una sola confirmación, y borrado **secuencial** porque cada `/delete` reescribe el manifiesto entero. Verificado en placa: `200`, `400` con `../manifest.txt`, `400` con un POST **sin cuerpo** —que es un fallo que el banco arrastra y aquí se cerró con guard de identidad—, `200` idempotente sobre un nombre que ya no existe, y **el contador de NVS sin retroceder**: tras borrar la `00000074`, la siguiente subida salió `00000075`. Detalle en §4.
 13. **Lector SD y coexistencia de los dos buses.** **Hecho, 7-ago-2026.** Montado
     en placa y probado con el display encendido a la vez, que era el riesgo real
     (issue #3601 de TFT_eSPI) y no que `SD.begin()` funcionara. Dos corridas de
@@ -1203,10 +1266,29 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
     el binario del punto 14. Los +24 B de RAM son la comprobación de que los 31 KB
     de la página fueron a `.rodata` y no a DRAM.
 
-    **Falta de esta pieza, y no es poco**: todo lo que necesita el teléfono. La
-    tanda de 30 desde el iPhone, el recorrido completo de placa virgen —QR de
-    setup → portal → QR de uso diario→ abrir la página—, si el display tartamudea
-    mientras entra una foto, y **el heap con el portal cautivo abierto**, que es
-    el número que decide si el buffer de 64 KB se queda donde está.
+    **La tanda de 30 desde el iPhone ya está hecha**, contra el marco y con la
+    tarjeta recién vaciada:
+
+    - **30 fotos, nombres `00000044`–`00000073`, cero huecos y estrictamente
+      crecientes.** Es la comprobación fuerte de que ninguna escritura falló: el
+      número se reserva en NVS *antes* de escribir, así que un fallo habría dejado
+      hueco. Y sin huecos tampoco hubo reintentos, o sea que el orden del
+      manifiesto **es** el de la rejilla.
+    - Peso: media **34.5 KB**, mediana 34,158 B, entre 16,914 y 51,898 B, y **15
+      de las 30 por encima del presupuesto** de 32,768 B.
+    - **`mayorBloque` sigue en 25,588 B tras la tanda**, el mismo valor que antes
+      de ella: la ruta de subida no fragmenta ni después de 30 escrituras reales.
+    - **El suelo de heap durante la tanda fue 55,788 B libres** (`minHist`), sin
+      un solo reinicio de por medio.
+    - Con fotos reales el pipeline de §6 se comporta como predice la tabla:
+      `320×427` es el caso dominante —la vertical 3:4 de iPhone— y sale en
+      **252-305 ms con `heap +0`**. Algo por encima de los 230 ms de la tabla,
+      que se midieron con fotos de prueba: una foto real tiene más entropía y
+      decodificar es el 57 % del tiempo.
+
+    **Falta de esta pieza**: el recorrido completo de placa virgen —QR de setup →
+    portal → QR de uso diario → abrir la página—, y con él **el heap con el portal
+    cautivo abierto**, que es el número que decide si el buffer de 64 KB se queda
+    donde está.
 
 16. Integración y modelado de la carcasa.

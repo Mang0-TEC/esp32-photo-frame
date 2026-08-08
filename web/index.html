@@ -132,6 +132,18 @@
   @media (prefers-reduced-motion:reduce){ .mosaico.proc::after{animation:none} }
   @keyframes barrido{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 
+  /* Galería: el mosaico es un <div>, no un <button> como el de la tanda — un
+     botón dentro de otro es HTML inválido. La selección se marca con borde y
+     atenuado, que se leen sin depender del color. */
+  .mosaico.sel{outline:3px solid var(--err);outline-offset:-3px}
+  .mosaico.sel img{opacity:.5}
+  .mosaico .tic{
+    position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:10px;
+    background:var(--err);font-size:12px;line-height:20px;text-align:center;font-weight:700;
+  }
+  .mosaico.yendo{opacity:.4}
+  #rejillaGaleria .mosaico{cursor:pointer}
+
   table.diag{width:100%;border-collapse:collapse;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   table.diag th{text-align:left;font-weight:400;color:var(--ink-soft);padding:3px 0;width:47%}
   table.diag td{text-align:right;padding:3px 0;font-variant-numeric:tabular-nums}
@@ -189,6 +201,10 @@
     <input type="file" id="file" accept="image/*" multiple>
     <label class="pick" for="file" id="lblPick">Elegir fotos</label>
     <p class="aviso" id="avisoTope" hidden></p>
+    <!-- Va AQUÍ y no en .actions: pintarBarra() oculta #cardAcciones cuando la
+         tanda está vacía, y entrar sin tanda es exactamente el caso de venir solo
+         a quitar fotos. Ésta es la única tarjeta siempre visible. -->
+    <button type="button" class="btn-min" id="btnVerGaleria" hidden>Ver las fotos del marco</button>
   </div>
 
   <div class="card" id="cardVacia">
@@ -272,6 +288,29 @@
   <div class="card">
     <div class="actions">
       <button type="button" id="btnAplicarRecorte" class="primary">Usar este recuadro</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════════ VISTA GALERÍA (lo que ya está en el marco) ══════════════ -->
+<div id="vistaGaleria" hidden>
+
+  <button type="button" class="btn-min volver" id="btnCerrarGaleria">‹ Volver</button>
+
+  <div class="card">
+    <div class="barra">
+      <p class="estado" id="estadoGaleria" aria-live="polite"></p>
+      <button type="button" class="btn-min" id="btnMasGaleria" hidden>Ver más</button>
+    </div>
+    <div class="rejilla" id="rejillaGaleria"></div>
+    <p class="aviso mal" id="avisoGaleria" hidden></p>
+    <p class="hint" id="hintGaleria">Toca las fotos que quieras quitar del marco.</p>
+  </div>
+
+  <div class="card" id="cardBorrar" hidden>
+    <div class="actions">
+      <button type="button" id="btnBorrarSel" class="destructiva"></button>
     </div>
   </div>
 
@@ -545,6 +584,55 @@ function cajaMaxima(nw, nh){
   return { w, h: w * nw * CFG.TARGET_H / (nh * CFG.TARGET_W) };
 }
 
+/* Auto-llenado: quita las franjas negras cuando el recorte que hace falta es
+   pequeño Y cae del lado seguro. Devuelve un rectángulo normalizado como el de un
+   recorte manual, o null para dejar la foto completa con sus franjas.
+
+   POR QUÉ EXISTE, medido sobre el panel real: una vertical 3:4 de celular —el caso
+   dominante— entra en 320×427 y deja 53 px negros repartidos arriba y abajo. Sobre
+   la mesa es «el 11 % del alto»; en el marco se ven, y es lo primero que se nota.
+
+   QUÉ SE RECORTA, y no siempre es el mismo eje: una foto MÁS ANCHA que 2:3 (la 3:4
+   de celular) pierde ancho —márgenes laterales—, y una MÁS ESTRECHA (una 9:16)
+   pierde alto. La primera versión de esta función solo permitía lo primero, por el
+   veto de §4 al recorte automático («decapita gente en las verticales»).
+
+   ESA GUARDA SE QUITÓ, y el motivo salió de medir la fototeca real en vez de
+   suponerla: de 29 fotos subidas desde el iPhone, **17 eran 9:16** y solo 8
+   llenaban. O sea que el caso dominante no es la 3:4 sino la 9:16, y dejarla fuera
+   mantenía las franjas justo donde se quería quitarlas. Llenar una 9:16 cuesta
+   15.6 % del alto, 7.8 % por lado.
+
+   Queda UNA sola guarda, y es el umbral, que hace todo el trabajo:
+     - 3:4 vertical  → 11.1 % del ancho  → llena
+     - 9:16 vertical → 15.6 % del alto   → llena
+     - 19.5:9 captura→ 30.8 % del alto   → franjas + aviso
+     - 4:3 horizontal→ 50.0 % del ancho  → franjas + aviso
+
+   El veto de §4 sigue vivo donde importa: lo que prohíbe es el recorte automático
+   GRANDE y en silencio, y media foto sigue sin tocarse. Lo que se acepta es que un
+   7.8 % por lado puede rozar una cabeza en un retrato muy justo — es el precio, se
+   tomó con los números delante, y el editor sigue a un toque para rehacer el encuadre.
+
+   Se reutiliza AVISO_BARRAS como umbral a propósito: es la misma pregunta —«¿esta
+   franja es lo bastante grande como para que importe?»— y tener dos constantes que
+   responden lo mismo es lo que las hace divergir. Ojo si se separan algún día: las
+   dos fracciones no son idénticas para la misma foto (una 3:4 deja 11.04 % de franja
+   y pide 11.11 % de recorte), solo se parecen.
+
+   NO devuelve un item.recorte: el auto-llenado no es una decisión de quien sube, así
+   que no enciende «Quitar recorte» ni cuenta como recorte en el diagnóstico. Se
+   aplica dentro de procesar() como rectángulo fuente y nada más. Quien quiera otro
+   encuadre abre el editor, que arranca justo en esta misma caja. */
+function autoLlenar(nw, nh){
+  const c = cajaMaxima(nw, nh);
+  if (c.w > 1 - EPS && c.h > 1 - EPS) return null;   // ya es 2:3: nada que quitar
+  // cajaMaxima() encoge exactamente UN eje: el otro vale 1. La pérdida es la del
+  // que encogió, y el umbral decide sin importar cuál sea.
+  if (1 - Math.min(c.w, c.h) > CFG.AVISO_BARRAS) return null;
+  return { x: (1 - c.w) / 2, y: (1 - c.h) / 2, w: c.w, h: c.h };   // centrado
+}
+
 /* Tope de zoom: el que deja el recorte en CFG.TARGET_W píxeles de fuente. Más allá
    se estaría ampliando, justo lo que el contain evita. */
 const zoomMaximo = (wBase, nw) =>
@@ -631,12 +719,16 @@ async function procesar(file, recorte = null){
   try {
     const sw = img.naturalWidth, sh = img.naturalHeight;
 
-    /* Sin recorte, el rectángulo fuente es la imagen entera y el contain deja las
-       barras negras que pinta el firmware. Con recorte, la región ya es 2:3 y la
-       salida son 320×480 exactos — sin barras, y con el presupuesto completo de
-       32,768 B, que es un cluster de la SD. Recortar SUBE el peso del archivo,
-       porque la foto pasa a ocupar más pantalla. */
-    const r = rectFuente(recorte, sw, sh);
+    /* Con recorte manual la región ya es 2:3 y la salida son 320×480 exactos — sin
+       franjas, y con el presupuesto completo de 32,768 B, que es un cluster de la
+       SD. Sin recorte se intenta el auto-llenado, y si tampoco procede el rectángulo
+       es la imagen entera y el contain deja las franjas que pinta el firmware.
+
+       Recortar SUBE el peso del archivo, porque la foto pasa a ocupar más pantalla:
+       una 3:4 pasa de un objetivo de 28.5 KB a los 32,768 B completos. Con el
+       auto-llenado eso deja de ser la excepción y pasa a ser el caso normal, así que
+       la tanda entera pesa más y se acerca al tope duro de 64 KB del firmware. */
+    const r = rectFuente(recorte || autoLlenar(sw, sh), sw, sh);
     const { dstW, dstH, maxBytes } = medidaSalida(r.sw, r.sh);
 
     const t1 = performance.now();
@@ -1364,11 +1456,282 @@ function cerrarDetalle(porHistoria){
   historiaEmpujada = false;
 }
 
-/* Dos niveles de historial: rejilla → detalle → editor, los dos empujados con la
-   MISMA URL (invariante de §4: el AsyncWebServer tiene cinco rutas y ningún
-   catch-all). El manejador decide por lo que está abierto, no por el estado. */
-window.addEventListener("popstate",
-  () => { if (ed) cerrarEditor(); else cerrarDetalle(true); });
+/* ─────────────────────────────────────────────────────────────
+   6-bis. GALERÍA DE LO YA CARGADO  —  §4, punto 12 de §12
+
+   El objetivo es CURACIÓN, no espacio: caben ~121,000 fotos, así que un medidor
+   de espacio libre sería un número técnico sin ninguna acción detrás. Lo que hace
+   falta es quitar la que salió movida, o las diez de aquel viaje.
+
+   No hay endpoints nuevos: /list da el manifiesto crudo y /photo?n= sirve cada
+   archivo. Tampoco hay miniaturas que generar — las fotos pesan ~34 KB, así que la
+   galería muestra los archivos reales.
+   ───────────────────────────────────────────────────────────── */
+
+let galeriaAbierta  = false;      // el discriminante del popstate
+let galeriaEmpujada = false;
+let galeriaNombres  = [];         // el manifiesto entero, leído una sola vez
+let galeriaPintadas = 0;
+let galeriaSel      = new Set();
+let galeriaBorrando = false;
+
+/* De 60 en 60. §4 mide que 30 bitmaps de 320×480 son ~18 MB vivos y de ahí sale
+   MAX_TANDA; una galería de cientos sin acotar es el mismo problema multiplicado.
+   loading="lazy" ahorra la red, pero no garantiza que el navegador suelte lo que
+   sale de pantalla. */
+const GALERIA_PAGINA = 60;
+
+async function abrirGaleria(){
+  if (CFG.BASE === null) return;         // sin marco no hay nada que listar
+  galeriaAbierta = true;
+  galeriaNombres = []; galeriaPintadas = 0; galeriaSel.clear();
+  galeriaCargando = 0;
+  $("rejillaGaleria").innerHTML = "";
+  $("avisoGaleria").hidden = true;
+  $("btnMasGaleria").hidden = true;
+  $("cardBorrar").hidden = true;
+  $("estadoGaleria").textContent = "Leyendo el marco…";
+
+  $("vistaRejilla").hidden = true;
+  $("vistaGaleria").hidden = false;
+  window.scrollTo(0, 0);
+
+  galeriaEmpujada = false;
+  try { history.pushState({ galeria: 1 }, "", location.href); galeriaEmpujada = true; }
+  catch { /* sin historial; el botón «Volver» sigue funcionando */ }
+
+  try {
+    /* Sin cabeceras propias y sin cache:"no-store": Cache-Control no es safelisted
+       y dispararía un OPTIONS que, con cinco rutas y sin catch-all, cae en
+       onNotFound → 404. El no-store va en la respuesta, que es donde lo pone el
+       servidor. */
+    const res = await fetch(CFG.BASE + "/list");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    galeriaNombres = (await res.text()).split("\n").map(s => s.trim()).filter(Boolean);
+  } catch (err) {
+    $("estadoGaleria").textContent = "No se pudieron leer las fotos del marco.";
+    fallaGaleria("No se pudieron leer las fotos del marco.", err.name);
+    return;
+  }
+  if (!galeriaAbierta) return;           // se cerró mientras cargaba
+
+  if (!galeriaNombres.length) {
+    $("estadoGaleria").textContent = "El marco todavía no tiene fotos.";
+    $("hintGaleria").hidden = true;
+    return;
+  }
+  $("hintGaleria").hidden = false;
+  pintarMasGaleria();
+}
+
+function pintarMasGaleria(){
+  const hasta = Math.min(galeriaPintadas + GALERIA_PAGINA, galeriaNombres.length);
+  const frag = document.createDocumentFragment();
+  for (let i = galeriaPintadas; i < hasta; i++) {
+    const n = galeriaNombres[i];
+    /* <div>, NO <button>: el mosaico de la tanda sí es un botón, y anidar botones
+       es HTML inválido además de hacer burbujear el click. .mosaico es solo CSS. */
+    const el = document.createElement("div");
+    el.className = "mosaico";
+    el.id = "g" + n;
+    /* El <img> nace SIN src: lo pone cargarCola() de pocas en pocas. Ver ahí por
+       qué, que costó tirar el marco.
+       Son URLs de red, no object URLs: aquí no hay nada que revocar, así que la
+       regla de «sacar del DOM antes de revocar» no aplica. */
+    el.innerHTML = `<img alt="" decoding="async" data-n="${n}">`;
+    el.addEventListener("click", () => alternarSel(n, el));
+    frag.appendChild(el);
+  }
+  $("rejillaGaleria").appendChild(frag);
+  galeriaPintadas = hasta;
+  $("btnMasGaleria").hidden = galeriaPintadas >= galeriaNombres.length;
+  pintarEstadoGaleria();
+  cargarCola();
+}
+
+/* Las imágenes se piden de POCAS EN POCAS, y esto no es optimización: es lo que
+   impide tirar el marco.
+
+   `AsyncFileResponse` retiene un descriptor de archivo ABIERTO mientras dura cada
+   descarga, y el VFS del ESP32 monta con un tope. Soltar 60 <img src> a la vez los
+   agota, y el daño no se queda en la galería: `loop()` deja de poder abrir el
+   manifiesto, la pantalla del marco cae a «No hay fotos», `/list` empieza a
+   contestar vacío —o sea que la página miente— y remata en abort() y reinicio.
+   Medido en placa el 7-ago-2026 con 30 fotos: el marco entró en bucle de reinicio.
+
+   El firmware ahora se defiende solo (tope de peticiones en vuelo y 503), porque la
+   concurrencia es disciplina del cliente y el servidor no puede confiar en ella.
+   Esto es el otro lado: pedir bien para que ese 503 no haga falta. Con 4 en vuelo y
+   ~34 KB por foto sobre LAN, una página de 60 tarda unos segundos.
+
+   `loading="lazy"` NO bastaba: decide por visibilidad, no por concurrencia, y en
+   una rejilla de tres columnas ya hay una docena de mosaicos a la vista. */
+const GALERIA_EN_VUELO = 2;
+let galeriaCargando = 0;
+
+function cargarCola(){
+  const pendientes = $("rejillaGaleria").querySelectorAll("img[data-n]:not([src])");
+  for (const img of pendientes) {
+    if (galeriaCargando >= GALERIA_EN_VUELO) return;
+    galeriaCargando++;
+
+    const listo = () => { galeriaCargando--; cargarCola(); };
+    img.addEventListener("load", listo, { once: true });
+    /* El 503 del firmware es REINTENTABLE y hay que reintentarlo de verdad: un
+       <img> que falla se queda roto para siempre, porque en cuanto tiene src deja
+       de estar en la cola. Se le quita el src para devolverlo a la fila y se
+       reintenta un par de veces — el 503 significa «ahora mismo no», no «nunca».
+       Sin esto, cualquier coincidencia con la lectura que hace loop() deja un
+       hueco negro permanente en la galería. */
+    img.addEventListener("error", () => {
+      const intentos = (+img.dataset.intentos || 0) + 1;
+      img.dataset.intentos = intentos;
+      if (intentos <= 3) {
+        // El src se quita DENTRO del timeout, no aquí: quitarlo antes lo devuelve
+        // a la cola mientras su hueco sigue ocupado, así que otra vuelta podría
+        // recogerlo, ponerle un segundo juego de listeners y descuadrar el
+        // contador. Se libera y se re-encola en el mismo instante.
+        setTimeout(() => {
+          img.removeAttribute("src");
+          galeriaCargando--;
+          cargarCola();
+        }, 400 * intentos);
+      } else {
+        listo();                          // se rinde: queda el recuadro vacío
+      }
+    }, { once: true });
+
+    img.src = `${CFG.BASE}/photo?n=${img.dataset.n}`;
+  }
+}
+
+function pintarEstadoGaleria(){
+  const t = galeriaNombres.length;
+  $("estadoGaleria").textContent = galeriaPintadas < t
+    ? `${galeriaPintadas} de ${t} fotos`
+    : (t === 1 ? "1 foto en el marco" : `${t} fotos en el marco`);
+  const n = galeriaSel.size;
+  $("cardBorrar").hidden = n === 0;
+  $("btnBorrarSel").textContent = n === 1 ? "Quitar 1 foto del marco"
+                                          : `Quitar ${n} fotos del marco`;
+}
+
+function alternarSel(nombre, el){
+  if (galeriaBorrando) return;           // hay peticiones en vuelo sobre esta lista
+  if (galeriaSel.has(nombre)) { galeriaSel.delete(nombre); el.classList.remove("sel"); el.querySelector(".tic")?.remove(); }
+  else { galeriaSel.add(nombre); el.classList.add("sel"); el.insertAdjacentHTML("beforeend", '<span class="tic">✕</span>'); }
+  pintarEstadoGaleria();
+}
+
+function fallaGaleria(texto, motivo){
+  const el = $("avisoGaleria");
+  el.hidden = false;
+  el.textContent = CFG.DIAG && motivo ? `${texto} (${motivo})` : texto;
+}
+
+/* Un solo /delete, con el mismo AbortController que subirUno() — y NO
+   AbortSignal.timeout(), que es Safari 17.4+.
+
+   Content-Type: application/json es OBLIGATORIO y está medido en placa: con
+   x-www-form-urlencoded el AsyncWebServer parsea el cuerpo como formulario, el
+   callback de cuerpo nunca lo ve, y contesta 200 sobre un borrado que no ocurrió.
+   Ojo, esa cabecera NO es safelisted: sobre mismo origen —el valor de producción—
+   da igual, pero desde otro origen dispara un OPTIONS que cae en onNotFound. */
+async function borrarUna(nombre){
+  const ctrl = new AbortController();
+  let expiro = false;
+  const reloj = setTimeout(() => { expiro = true; ctrl.abort(); }, CFG.TIMEOUT_MS);
+  try {
+    const res = await fetch(CFG.BASE + "/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ n: nombre }),
+      signal: ctrl.signal
+    });
+    if (res.status === 200) return { ok: true };
+    return { ok: false, motivo: "HTTP " + res.status };
+  } catch (err) {
+    return { ok: false, motivo: expiro ? `sin respuesta en ${CFG.TIMEOUT_MS / 1000} s` : err.name };
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+/* SECUENCIAL, concurrencia 1: cada /delete reescribe el manifiesto entero en el
+   marco, y dos a la vez sobre el mismo archivo es pedir corrupción. Es la misma
+   disciplina que la subida. */
+async function borrarSeleccionadas(){
+  if (galeriaBorrando || !galeriaSel.size) return;
+  const n = galeriaSel.size;
+  if (!confirm(n === 1
+        ? "Esta foto se borra del marco y no se puede recuperar. ¿Quitarla?"
+        : `Estas ${n} fotos se borran del marco y no se pueden recuperar. ¿Quitarlas?`)) return;
+
+  galeriaBorrando = true;
+  $("btnBorrarSel").disabled = true;
+  $("avisoGaleria").hidden = true;
+  let fallaron = 0, ultimoMotivo = "";
+
+  for (const nombre of [...galeriaSel]) {
+    const el = document.getElementById("g" + nombre);
+    if (el) el.classList.add("yendo");
+    const r = await borrarUna(nombre);
+    if (r.ok) {
+      galeriaSel.delete(nombre);
+      galeriaNombres = galeriaNombres.filter(x => x !== nombre);
+      galeriaPintadas--;
+      if (el) el.remove();
+    } else {
+      fallaron++; ultimoMotivo = r.motivo;
+      if (el) el.classList.remove("yendo");
+    }
+  }
+
+  galeriaBorrando = false;
+  $("btnBorrarSel").disabled = false;
+  if (fallaron) {
+    fallaGaleria(fallaron === 1
+      ? "Una foto no se pudo quitar. Inténtalo otra vez."
+      : `${fallaron} fotos no se pudieron quitar. Inténtalo otra vez.`, ultimoMotivo);
+  }
+  if (!galeriaNombres.length) $("hintGaleria").hidden = true;
+  pintarEstadoGaleria();
+  if (!galeriaNombres.length) $("estadoGaleria").textContent = "El marco ya no tiene fotos.";
+}
+
+/* Solo desmonta: NO toca el historial, igual que cerrarEditor() y por la misma
+   razón. Con más de un nivel, que la función de cierre navegue hace que el
+   popstate de su propio back() cierre también el de abajo. Navegan los botones. */
+function cerrarGaleria(){
+  if (!galeriaAbierta) return;
+  galeriaAbierta = false;
+  galeriaEmpujada = false;
+  $("vistaGaleria").hidden = true;
+  $("vistaRejilla").hidden = false;
+  $("rejillaGaleria").innerHTML = "";    // suelta los <img> de la tarjeta
+  galeriaNombres = []; galeriaPintadas = 0; galeriaSel.clear();
+  // Sin esto, las descargas que quedaron a medias no devuelven su hueco —sus <img>
+  // ya no están en el DOM— y la galería siguiente arrancaría con el contador sucio
+  // y cargando de menos, o nada.
+  galeriaCargando = 0;
+}
+
+const salirDeLaGaleria = () => { if (galeriaEmpujada) history.back(); else cerrarGaleria(); };
+
+/* UN SOLO listener de popstate en todo el archivo, y tiene que seguir siendo uno:
+   añadir otro para una vista nueva haría que los dos dispararan en cada gesto de
+   atrás. Los niveles se empujan con la MISMA URL (invariante de §4: el
+   AsyncWebServer tiene cinco rutas y ningún catch-all). El manejador decide por lo
+   que está abierto, no por el estado.
+
+   El ORDEN de las ramas importa: la galería va ANTES de la delegación a
+   cerrarDetalle(true), porque el guard de esa función (detalleId === null) la
+   convierte en no-op y dejaría la galería montada con la rejilla debajo. */
+window.addEventListener("popstate", () => {
+  if (ed) cerrarEditor();
+  else if (galeriaAbierta) cerrarGaleria();
+  else cerrarDetalle(true);
+});
 
 function pintarDetalle(item){
   const stage = $("stage");
@@ -1665,6 +2028,9 @@ function aplicarModoRed(){
   const sinRed = CFG.BASE === null;
   $("btnUpload").hidden     = sinRed;
   $("btnProbarOrden").hidden = sinRed;
+  // Misma compuerta y misma comparación CONTRA null: "" es falsy y es el valor de
+  // producción, así que un if (CFG.BASE) escondería la galería justo en el marco.
+  $("btnVerGaleria").hidden = sinRed;
   $("hint").textContent = sinRed
     ? "«Guardar JPEG» descarga el archivo exacto que se subiría al marco, para revisarlo en la computadora."
     : "Se suben de una en una. Lo que ya haya subido se queda en el marco aunque canceles.";
@@ -1769,6 +2135,12 @@ $("btnQuitarRecorte").addEventListener("click", () => {
 });
 
 $("btnQuitarFoto").addEventListener("click", () => quitarFoto(detalleId));
+
+$("btnVerGaleria").addEventListener("click", abrirGaleria);
+// El botón navega y la función de cierre solo desmonta — ver cerrarGaleria().
+$("btnCerrarGaleria").addEventListener("click", salirDeLaGaleria);
+$("btnMasGaleria").addEventListener("click", pintarMasGaleria);
+$("btnBorrarSel").addEventListener("click", borrarSeleccionadas);
 
 /* Diagnóstico: relee la primera y la última de la tanda y compara byteLength
    contra file.size. Es la prueba de que los File del selector siguen vivos, que es
@@ -1881,6 +2253,49 @@ if (CFG.DIAG) (function comprobarGeometria(){
   const todo = rectFuente(null, 800, 600);
   console.assert(todo.sw === 800 && todo.sh === 600 && todo.sx === 0 && todo.sy === 0,
                  "sin recorte el rectángulo debe ser la imagen entera");
+
+  /* Auto-llenado. Las dos guardas se comprueban por separado porque fallan por
+     motivos distintos, y la del alto es la que protege caras. */
+  const llena = (nw, nh) => {
+    const a = autoLlenar(nw, nh);
+    if (!a) return null;
+    return medidaSalida(rectFuente(a, nw, nh).sw, rectFuente(a, nw, nh).sh);
+  };
+
+  // 3:4 de celular: recorta 11 % del ANCHO y tiene que llenar la pantalla
+  const m34 = llena(3024, 4032);
+  console.assert(m34 && m34.dstW === CFG.TARGET_W && m34.dstH === CFG.TARGET_H,
+                 "una 3:4 debería auto-llenarse a 320×480");
+  console.assert(autoLlenar(3024, 4032).y === 0 && autoLlenar(3024, 4032).h === 1,
+                 "el auto-llenado de una 3:4 NO debe tocar el alto");
+  console.assert(Math.abs(autoLlenar(3024, 4032).x - (1 - autoLlenar(3024, 4032).w) / 2) < 1e-9,
+                 "el auto-llenado debe ir centrado");
+
+  // 4:3 horizontal: pide el 50 % del ancho, muy por encima del umbral → franjas
+  console.assert(autoLlenar(4032, 3024) === null,
+                 "una 4:3 horizontal NO debe auto-llenarse: perdería media foto");
+
+  // 9:16: el caso DOMINANTE de la fototeca real (17 de 29 medidas). Recorta 15.6 %
+  // del ALTO y sí debe llenar — es lo que hizo quitar la guarda por eje.
+  const m916 = llena(1080, 1920);
+  console.assert(m916 && m916.dstW === CFG.TARGET_W && m916.dstH === CFG.TARGET_H,
+                 "una 9:16 debería auto-llenarse a 320×480");
+  console.assert(autoLlenar(1080, 1920).x === 0 && autoLlenar(1080, 1920).w === 1,
+                 "el auto-llenado de una 9:16 recorta el ALTO, no el ancho");
+
+  // 19.5:9: 30.8 % del alto, por encima del umbral → conserva sus franjas
+  console.assert(autoLlenar(1179, 2556) === null,
+                 "una captura 19.5:9 NO debe auto-llenarse: pide 30.8 % del alto");
+
+  // 2:3 exacta: ya llena, no hay nada que recortar
+  console.assert(autoLlenar(3024, 4536) === null,
+                 "una 2:3 exacta no necesita auto-llenado");
+
+  // El umbral es lo ÚNICO que decide, y se comprueba por los dos lados del 2:3
+  console.assert(autoLlenar(3024, 4600) !== null,
+                 "apenas más estrecha que 2:3: recorte mínimo del alto, debe llenar");
+  console.assert(autoLlenar(3100, 4536) !== null,
+                 "apenas más ancha que 2:3: recorte mínimo del ancho, debe llenar");
 })();
 </script>
 </body>

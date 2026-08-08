@@ -46,18 +46,30 @@
   const vertical   = await jpeg(900, 1200, "vertical34.jpg");   // 3:4
   const horizontal = await jpeg(1200, 900, "horizontal43.jpg"); // 4:3
   const exacta     = await jpeg(800, 1200, "exacta23.jpg");     // 2:3
+  const alta       = await jpeg(540, 960,  "vertical916.jpg");  // 9:16 — 17 de 29 reales
 
   // ── El pipeline base, que la etapa 4 no debe haber movido ──────────────────
-  await meter([vertical, horizontal, exacta]);
-  ok(await hasta(() => cola.items.length === 3 && cola.items.every(i => i.estado === "lista")),
-     "las tres fotos se prepararon");
+  await meter([vertical, horizontal, exacta, alta]);
+  ok(await hasta(() => cola.items.length === 4 && cola.items.every(i => i.estado === "lista")),
+     "las cuatro fotos se prepararon");
 
-  const [v, h, e] = cola.items;
-  ok(v.dstW === 320 && v.dstH === 427, `3:4 completa → 320×427 (dio ${v.dstW}×${v.dstH})`);
-  ok(h.dstW === 320 && h.dstH === 240, `4:3 completa → 320×240 (dio ${h.dstW}×${h.dstH})`);
+  const [v, h, e, a] = cola.items;
+  // La 9:16 es el caso DOMINANTE de la fototeca real —17 de 29 medidas en placa— y
+  // llenarla recorta el ALTO. Es lo que hizo quitar la guarda por eje del auto-llenado.
+  ok(a.dstW === 320 && a.dstH === 480, `9:16 se auto-llena → 320×480 (dio ${a.dstW}×${a.dstH})`);
+  // Una 3:4 se AUTO-LLENA: recortar 11 % del ancho quita las franjas y no toca el
+  // alto, así que no hay caras en riesgo. Es el caso dominante del iPhone y sobre el
+  // panel real las franjas se veían.
+  ok(v.dstW === 320 && v.dstH === 480, `3:4 se auto-llena → 320×480 (dio ${v.dstW}×${v.dstH})`);
+  // Una 4:3 NO: llenarla costaría la mitad del ancho. Se queda con sus franjas.
+  ok(h.dstW === 320 && h.dstH === 240, `4:3 conserva franjas → 320×240 (dio ${h.dstW}×${h.dstH})`);
   ok(e.dstW === 320 && e.dstH === 480, `2:3 completa → 320×480 (dio ${e.dstW}×${e.dstH})`);
   ok(v.aviso === null && h.aviso !== null, "el aviso de franjas solo salta en la 4:3");
+  // El auto-llenado NO es un recorte de quien sube: no enciende «Quitar recorte» ni
+  // cuenta como recorte en el diagnóstico.
   ok(v.recorte === null && h.recorte === null, "nadie entra recortado");
+  // Y llenar sube el peso: la 3:4 pasa a cobrar el presupuesto completo de un cluster.
+  ok(v.maxBytes === 32768, `la 3:4 auto-llenada cobra el presupuesto pleno (dio ${v.maxBytes})`);
 
   // ── Editor sobre la 4:3, que es el caso que §6 dice que el recorte compensa ──
   abrirDetalle(h.id);
@@ -373,6 +385,114 @@
   ok(!/\d{3}|HTTP|BUG|byte|JPG/.test(visible), "y ningún texto visible deja rastro técnico — " + visible);
   cerrarDetalle();
   CFG.DIAG = true;
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     GALERÍA DE LO YA CARGADO Y POST /delete  (§4, punto 12 de §12)
+     ══════════════════════════════════════════════════════════════════════════ */
+  CFG.BASE = ""; aplicarModoRed();
+  limpiarTanda();
+
+  ok(!$$("btnVerGaleria").hidden, "el botón de la galería se pinta con BASE = \"\"");
+  CFG.BASE = null; aplicarModoRed();
+  ok($$("btnVerGaleria").hidden, "y desaparece sin marco al que preguntar");
+  CFG.BASE = ""; aplicarModoRed();
+
+  // El botón vive en la primera tarjeta, la única que NO se oculta con la tanda
+  // vacía. En #cardAcciones sería inalcanzable justo en el caso de venir a curar.
+  ok($$("cardAcciones").hidden && !$$("btnVerGaleria").hidden,
+     "y sigue alcanzable con la tanda vacía, que es cuando se viene a curar");
+
+  const nombresFalsos = k =>
+    Array.from({ length: k }, (_, i) => String(i + 1).padStart(8, "0") + ".JPG").join("\n");
+
+  // ── Tarjeta vacía ───────────────────────────────────────────────────────────
+  responder = async url => url.includes("/list")
+    ? new Response("", { status: 200 }) : new Response("no", { status: 404 });
+  await abrirGaleria();
+  ok($$("rejillaGaleria").children.length === 0 && /todavía no tiene/.test($$("estadoGaleria").textContent),
+     "con la tarjeta vacía lo dice y no pinta nada");
+  cerrarGaleria();
+
+  // ── Paginación de 60 sobre 130 ──────────────────────────────────────────────
+  const unPixel = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  responder = async url => {
+    if (url.includes("/list"))  return new Response(nombresFalsos(130), { status: 200 });
+    if (url.includes("/photo")) return new Response(unPixel, { status: 200 });
+    return new Response("no", { status: 404 });
+  };
+  await abrirGaleria();
+  ok($$("rejillaGaleria").children.length === 60, `la primera página pinta 60 (dio ${$$("rejillaGaleria").children.length})`);
+  ok(!$$("btnMasGaleria").hidden, "y el botón de ver más está");
+  $$("btnMasGaleria").click();
+  ok($$("rejillaGaleria").children.length === 120, "la segunda deja 120");
+  $$("btnMasGaleria").click();
+  ok($$("rejillaGaleria").children.length === 130, "la tercera completa las 130");
+  ok($$("btnMasGaleria").hidden, "y el botón desaparece al no quedar más");
+
+  // ── Los mosaicos NO son <button>: anidarlos sería HTML inválido ─────────────
+  ok($$("rejillaGaleria").firstElementChild.tagName === "DIV",
+     "los mosaicos de la galería son <div>, no <button>");
+
+  // ── Multi-selección ─────────────────────────────────────────────────────────
+  ok($$("cardBorrar").hidden, "sin nada marcado no hay botón de quitar");
+  $$("rejillaGaleria").children[0].click();
+  $$("rejillaGaleria").children[1].click();
+  $$("rejillaGaleria").children[2].click();
+  ok(!$$("cardBorrar").hidden && /3/.test($$("btnBorrarSel").textContent),
+     "con tres marcadas el botón dice cuántas — " + $$("btnBorrarSel").textContent);
+  $$("rejillaGaleria").children[2].click();
+  ok(/2/.test($$("btnBorrarSel").textContent), "y volver a tocar desmarca");
+
+  // ── Borrado: secuencial, con el Content-Type que el firmware exige ──────────
+  peticiones = []; maxEnVuelo = 0;
+  const confirmReal = window.confirm;
+  window.confirm = () => true;
+  responder = async url => {
+    if (url.includes("/delete")) return new Response('{"ok":true}', { status: 200 });
+    if (url.includes("/photo"))  return new Response(unPixel, { status: 200 });
+    return new Response("no", { status: 404 });
+  };
+  await borrarSeleccionadas();
+  const dels = peticiones.filter(p => p.url.includes("/delete"));
+  ok(dels.length === 2, `dos borrados, uno por foto marcada (dio ${dels.length})`);
+  ok(maxEnVuelo === 1, `y NUNCA dos a la vez: cada /delete reescribe el manifiesto entero (máx ${maxEnVuelo})`);
+  ok(dels.every(p => p.init.headers["Content-Type"] === "application/json"),
+     "con Content-Type: application/json, o el firmware nunca ve el cuerpo");
+  ok(dels.every(p => /^\{"n":"\d{8}\.JPG"\}$/.test(p.init.body)),
+     "y el cuerpo es {\"n\":\"NNNNNNNN.JPG\"}");
+  ok($$("rejillaGaleria").children.length === 128, `las borradas salen de la rejilla (quedan ${$$("rejillaGaleria").children.length})`);
+  ok($$("cardBorrar").hidden, "y no queda nada marcado");
+
+  // ── Un fallo deja esa foto puesta y avisa, sin tumbar el resto ──────────────
+  $$("rejillaGaleria").children[0].click();
+  $$("rejillaGaleria").children[1].click();
+  let cuantos = 0;
+  responder = async url => {
+    if (url.includes("/delete")) return new Response("", { status: ++cuantos === 2 ? 400 : 200 });
+    if (url.includes("/photo"))  return new Response(unPixel, { status: 200 });
+    return new Response("no", { status: 404 });
+  };
+  await borrarSeleccionadas();
+  ok($$("rejillaGaleria").children.length === 127, "la que sí se borró se fue");
+  ok(!$$("avisoGaleria").hidden && /no se pudo quitar/.test($$("avisoGaleria").textContent),
+     "y la que falló lo dice — " + $$("avisoGaleria").textContent);
+
+  // ── El popstate cierra EXACTAMENTE un nivel ────────────────────────────────
+  ok(galeriaAbierta, "la galería sigue abierta");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  ok(!galeriaAbierta && $$("vistaGaleria").hidden && !$$("vistaRejilla").hidden,
+     "el gesto de atrás cierra la galería y devuelve a la rejilla");
+
+  // Y con la galería cerrada el mismo listener sigue atendiendo al detalle: es la
+  // regresión que un segundo addEventListener habría introducido.
+  window.confirm = confirmReal;
+  await meter([vertical]);
+  await hasta(() => cola.items.every(i => i.estado === "lista"));
+  abrirDetalle(cola.items[0].id);
+  ok(!$$("vistaDetalle").hidden, "el detalle abre");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  ok($$("vistaDetalle").hidden && !$$("vistaRejilla").hidden,
+     "y el mismo popstate lo cierra: sigue habiendo UN solo listener");
 
   window.fetch = fetchReal;
   CFG.BASE = null; aplicarModoRed();

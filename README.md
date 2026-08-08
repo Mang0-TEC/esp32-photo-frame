@@ -173,8 +173,8 @@ node web/test/correr.js
 - **Cuerpo vacío, con `TODO`:** `showNextPhoto()`, `drawSetupQR()`,
   `drawUsageQR()` — sin decodificación JPEG ni generación de QR todavía, aunque
   `TFT_eSPI`, `TJpg_Decoder` y `QRCode` ya están enlazados.
-- **Responde fijo, no funcional:** `/upload` devuelve `500` sin escribir a la SD,
-  `/delete` devuelve `503` siempre.
+- **El contrato HTTP completo:** `/`, `/list`, `/photo`, `/upload` y `/delete`. Ya
+  no queda ninguna ruta respondiendo fijo.
 
 ### Lo que falta
 
@@ -217,9 +217,10 @@ node web/test/correr.js
    brillo por BH1750, toque capacitivo y QR — **incluido el QR de uso diario
    saliendo solo al terminar el provisioning**, porque el toque largo que lo
    muestra hoy es un gesto que nadie va a explicarle a quien reciba el marco.
-4. **Galería de lo ya cargado y `POST /delete`** — la única ruta del contrato que
-   la página todavía no llama. Muestra **todas** las fotos de la tarjeta y deja
-   quitar cualquiera. El objetivo es curación, no espacio: caben ~121,000 fotos.
+4. ~~**Galería de lo ya cargado y `POST /delete`**~~ — **hecha, 7-ago-2026.**
+   Muestra todas las fotos de la tarjeta, paginadas de 60 en 60, con
+   multi-selección y una sola confirmación. El objetivo es curación, no espacio:
+   caben ~121,000 fotos. Sin endpoints ni dependencias nuevas.
 5. Integración y modelado de la carcasa.
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no

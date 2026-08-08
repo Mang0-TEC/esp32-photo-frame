@@ -54,7 +54,7 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
 | 15 | Filamento PLA | Carcasa y bisel |
-| 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`), `/dev/cu.wchusbserial1120` — va literal en cada env, y un glob no funciona: son **cinco** bloques de `upload_port`/`monitor_port`, uno por env (los cuatro del banco más el del marco). Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
+| 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`). **Los `.ini` ya no fijan el puerto**: se quitaron `upload_port` y `monitor_port` de los cinco envs para que PlatformIO autodetecte, porque el sufijo del tty es el location ID del USB y cambia al mover el cable de puerto. Detalle del mecanismo en `CLAUDE.md`. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
 La placa micro-USB **no es la unidad final**: micro-USB es mal conector para un
 objeto fijo 24/7 durante años; se afloja y su pad termina desprendiéndose del
@@ -815,13 +815,21 @@ Consecuencia para la tabla de arriba, que mide presupuesto y no ocupación real:
 
 Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
 
-**Y el caso medido cae del lado de los dos clusters.** El peso medio real de una tanda de 30 fotos de iPhone son **34.0 KB**, por encima de los 32,768 B del presupuesto. O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el número que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
+**Y el caso medido cae del lado de los dos clusters.** El peso medio real de una tanda de 30 fotos de iPhone está entre **34 y 37 KB**, siempre por encima de los 32,768 B del presupuesto. Tres tandas medidas: **34.0**, **37.2** y **34.5 KB** (ésta última, 1,060,496 B en 30 fotos, es la primera que aterrizó en la tarjeta del marco; la mediana fue 34,158 B y **15 de las 30 pasaron del presupuesto**). No se cita un valor único a propósito: depende del contenido de la tanda, y tres muestras no fijan una constante.
 
-**El peor caso medido no ha dejado de subir, y por eso no se usa como cota.** Van 40.3 KB (tirol blanco), 43.0 (malla metálica perforada) y **50.7 KB** (un perro sobre césped, o sea textura fina en todo el encuadre). Las tres son el mismo fenómeno: la búsqueda binaria toca el suelo de calidad y se acepta por encima del presupuesto, que es el comportamiento correcto de §4. Cualquier constante dimensionada contra el récord del día envejece en la siguiente tanda.
+O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el orden de magnitud que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
+
+**El peor caso medido no ha dejado de subir, y por eso no se usa como cota.** Van 40.3 KB (tirol blanco), 43.0 (malla metálica perforada), 50.7 (un perro sobre césped) y **60.4 KB (61,836 B)**, el récord del 7-ago-2026 dentro de una tanda normal de 30 fotos de iPhone. Ese récord vale aunque la tanda fuera contra el banco y no contra el marco: **el JPEG lo produce entero el navegador**, y qué servidor lo recibe no cambia un byte. Otra tanda de 30 el mismo día, ésta sí contra el marco, topó en 51,898 B — o sea que el récord depende del contenido y no del recorrido. Todas son el mismo fenómeno: la búsqueda binaria toca el suelo de calidad y se acepta por encima del presupuesto, que es el comportamiento correcto de §4. Cualquier constante dimensionada contra el récord del día envejece en la siguiente tanda — este párrafo lleva cuatro revisiones al alza y es la prueba.
 
 > Se intentó lo obvio —igualar el búfer de retención del banco al tope duro, para que no hubiera fotos sin verificar— y **se midió que no sale a cuenta**: `mayorBloque` cae de 34804 a 16372 B tras levantar el WiFi, la mitad del bloque contiguo mayor, con AsyncTCP pidiendo memoria por conexión. Ese búfer no lo limita el tamaño de las fotos sino el heap, y es un lujo del banco que el firmware real no va a tener. Se queda en 48 KB, y una foto mayor se reporta como «no retenida», que no es corrupción.
 
-**Y deja un margen que conviene mirar:** 50.7 KB contra los 64 KB del tope duro son **1.26×**. Por encima de ese tope el servidor responde `413` y la página no tiene salida más que descartar la foto — hoy es un riesgo teórico, pero era más teórico con el récord en 40.
+**Y el margen contra el tope duro se está cerrando, que es lo que hay que mirar.** 61,836 B contra los 65,536 del tope son **1.06×** — un 6 %. Era 1.26× con el récord en 50.7 KB y 1.6× con el de 40.3. Por encima de ese tope el servidor responde `413` y la página no tiene más salida que descartar la foto, así que **eso dejó de ser un riesgo teórico**: una sola foto con más textura que ésa, en la tanda de alguien, y la persona ve una foto que no se puede subir sin entender por qué.
+
+Tres salidas cuando toque, en orden de menos a más invasiva, y **ninguna se construye hoy** porque el `413` sigue sin haberse dado en una tanda real:
+
+1. **Subir el tope duro.** Es una constante en dos sitios (`TOPE_SUBIDA` del firmware y `TOPE_FIRMWARE` de la página) y el buffer ya se reserva al arrancar, así que el coste es heap fijo: 96 KB dejarían `mayorBloque` en ~11 KB al arrancar, que es poco margen para el resto. Medir antes de tocarlo.
+2. **Bajar el piso de calidad** por debajo de `q = 0.620`. Es una línea en `web/index.html`, pero degrada **todas** las fotos que topan el suelo, no solo la que se pasa.
+3. **Reintentar esa foto sola con un piso más bajo** cuando el servidor conteste `413`. Es lo correcto —solo castiga a la foto que lo necesita— y es también lo único de los tres que añade un camino de código nuevo a la capa de red.
 
 **Verificar al preparar la tarjeta.** 32 KB es lo que trae de fábrica y lo que produce el SD Card Formatter oficial, pero macOS puede elegir otro tamaño al reformatear. Se confirma con `diskutil info /dev/diskNs1`, campo de tamaño de asignación.
 

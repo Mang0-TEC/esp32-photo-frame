@@ -90,7 +90,15 @@ static constexpr uint8_t SALTOS_MAX = 8;
 // Reproducir solo necesita «la siguiente», así que el estado del manifiesto es
 // un offset en bytes y no un arreglo en RAM: sin tope de fotos, y sin retener
 // ningún descriptor (max_files es 5, y el streaming de /list abre el suyo).
-static uint32_t manifiestoOffset = 0;
+//
+// VOLATILE desde que existe /delete: lo lee loop() por siguienteNombre() y lo
+// escribe async_tcp al reescribir el manifiesto. Es el mismo cruce de hilos que
+// ledPedido y paginaAbierta, y se resuelve igual. Un borrado a media
+// reproducción no rompe nada: si el offset queda pasado del nuevo size(),
+// siguienteNombre() lo reajusta a 0, y si queda a media línea sale un nombre
+// truncado que nombreValido() rechaza gastando uno de los SALTOS_MAX. Las dos
+// degradaciones ya existían.
+static volatile uint32_t manifiestoOffset = 0;
 static bool     yaReconstruido   = false;   // pestillo anti-bucle de reconstrucción
 static uint32_t ultimaFotoMs     = 0;
 static bool     medirLaProxima   = true;    // la primera foto de cada arranque se mide
@@ -175,6 +183,9 @@ static void drawUsageQR();
 static void subidaFin(AsyncWebServerRequest* request);
 static void subidaChunk(AsyncWebServerRequest* request, String filename, size_t index,
                         uint8_t* data, size_t len, bool final);
+static void borrarFin(AsyncWebServerRequest* request);
+static void borrarCuerpo(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                         size_t index, size_t total);
 
 // ============================================================================
 // Autocomprobación de arranque
@@ -680,6 +691,144 @@ static void subidaFin(AsyncWebServerRequest* request) {
 }
 
 // ============================================================================
+// POST /delete — borrar una foto del marco (§4)
+//
+// El cuerpo es JSON y llega por onBody, NO por params: medido en placa que con
+// x-www-form-urlencoded AsyncWebServer lo parsea como formulario, el callback de
+// cuerpo nunca lo ve, y el servidor contesta 200 sobre un borrado que no ocurrió.
+// Por eso la ruta se registra con la forma de CINCO argumentos.
+//
+// Y no hace falta un parser de JSON para leer una clave de formato fijo: la
+// técnica es la del banco, strstr/strchr con la longitud como validación de
+// forma. Cero heap, cero dependencia — el mismo argumento con el que §3 justifica
+// que el manifiesto sea texto plano.
+// ============================================================================
+// ============================================================================
+// Descriptores de archivo — el recurso que la galería agotó
+//
+// `AsyncFileResponse` retiene un descriptor ABIERTO mientras dura la descarga, y
+// el VFS monta con un tope. Sin acotar, una galería que pide decenas de fotos a la
+// vez los agota, y el daño NO se queda en la galería: `loop()` deja de poder abrir
+// el manifiesto, la pantalla cae a «No hay fotos» y el fallo remata en abort().
+// Medido en placa el 7-ago-2026, con 30 fotos y el marco reiniciándose en bucle.
+//
+// El recurso escaso NO es el descriptor, es el HEAP: cada conexión de AsyncTCP
+// cuesta lo suyo, y el abort() sale de un `new` que ni siquiera puede asignar la
+// excepción de fallo. Subir max_files empeora el problema en vez de arreglarlo
+// (~4 KB de buffer de sector cada uno); está escrito en tarjeta.h.
+//
+// Así que el tope va aquí, en peticiones concurrentes, y deja margen para lo que
+// loop(), /list, /upload y /delete necesitan de los 5 descriptores del VFS.
+static volatile uint8_t fotosEnVuelo = 0;
+static constexpr uint8_t PHOTO_MAX_VUELO = 2;
+
+static char borrarN[13];
+// Identidad del dueño en vez de un bool: `borrarOk` a secas se queda RANCIO si el
+// cuerpo no llega nunca —un POST sin body— y borrarFin ejecutaría el nombre de la
+// petición anterior, o sea borraría otra foto. Es el mismo guard que /upload.
+static AsyncWebServerRequest* borrarDueno = nullptr;
+
+static void borrarCuerpo(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                         size_t index, size_t total) {
+    borrarDueno = nullptr;
+    // onBody puede llamarse varias veces; con un JSON de 30 B nunca lo hará, pero
+    // el código no debe depender de eso. Si llegara partido, se rechaza con 400.
+    if (index != 0 || index + len != total) return;
+
+    char cuerpo[128];
+    const size_t n = total < sizeof(cuerpo) - 1 ? total : sizeof(cuerpo) - 1;
+    memcpy(cuerpo, data, n);
+    cuerpo[n] = 0;                       // el data de onBody NO viene terminado
+
+    const char* c = strstr(cuerpo, "\"n\"");
+    if (!c || !(c = strchr(c + 3, ':')) || !(c = strchr(c, '"'))) return;
+    c++;
+    const char* fin = strchr(c, '"');
+    // La longitud ES la validación de forma: 12 es el largo de 00000042.JPG. Lo
+    // semántico —el guard contra ../manifest.txt— lo hace nombreValido() abajo.
+    if (!fin || fin - c != 12) return;
+    memcpy(borrarN, c, 12);
+    borrarN[12] = 0;
+    borrarDueno = request;
+}
+
+// Reescribe el manifiesto saltándose una línea. Devuelve false solo si no pudo
+// dejar el índice en un estado bueno.
+//
+// ponytail: la reescritura corre ENTERA en async_tcp y escala con el número de
+// fotos. Con los recuentos reales —cientos— son milisegundos; un manifiesto de
+// 121,000 entradas son ~1.5 MB de leer y escribir, muy por encima de cualquier
+// timeout. Si algún día importa, la salida es la misma que el BOM ya describe
+// para la subida: diferirlo a loop() por cola y responder 202.
+static bool quitarDelManifiesto(const char* nombre) {
+    File in  = TARJETA.open(MANIFIESTO, FILE_READ);
+    if (!in) return false;
+    File out = TARJETA.open(TEMPORAL, FILE_WRITE);
+    if (!out) { in.close(); return false; }
+
+    in.setTimeout(0);                    // igual que siguienteNombre(), y por lo mismo
+    char linea[16];
+    uint32_t copiadas = 0;
+    while (in.available()) {
+        const size_t k = in.readBytesUntil('\n', linea, sizeof linea - 1);
+        if (!k) break;
+        linea[k] = 0;
+        if (linea[k - 1] == '\r') linea[k - 1] = 0;   // por si se editó desde la Mac
+        if (linea[0] && strcmp(linea, nombre) != 0) {
+            out.printf("%s\n", linea);
+            copiadas++;
+        }
+    }
+    in.close();
+    out.close();
+
+    // Mismo cierre que reconstruirManifiesto(): f_rename NO sobrescribe, así que
+    // el destino se borra primero.
+    TARJETA.remove(MANIFIESTO);
+    if (!TARJETA.rename(TEMPORAL, MANIFIESTO)) {
+        TARJETA.remove(TEMPORAL);        // no dejar basura a medias en la raíz
+        return false;
+    }
+    // El offset es en BYTES y el archivo acaba de encogerse: sin esto apuntaría a
+    // media línea. Reproducir desde el principio es lo correcto y es lo que hacen
+    // las tres sustituciones de reconstruirManifiesto().
+    manifiestoOffset = 0;
+    Serial.printf("[borrar] %s fuera, quedan %lu\n", nombre, (unsigned long)copiadas);
+    return true;
+}
+
+static void borrarFin(AsyncWebServerRequest* request) {
+    int code;
+
+    if (!tarjetaMontada()) {
+        code = 503;
+    } else if (borrarDueno != request || !nombreValido(borrarN)) {
+        // Cuerpo ausente, partido, de otra petición, o nombre que no cumple el
+        // patrón. Los cuatro son el mismo 400 de §4: la página no puede hacer
+        // nada distinto con ninguno.
+        code = 400;
+    } else {
+        char ruta[32];
+        snprintf(ruta, sizeof ruta, "%s/%s", DIR_FOTOS, borrarN);
+        // LA FOTO PRIMERO, el índice después. Un corte entre los dos pasos deja un
+        // archivo huérfano que la reconstrucción recoge; al revés dejaría una
+        // entrada muerta que cuesta un getFsJpgSize fallido por vuelta hasta
+        // agotar SALTOS_MAX. Es el orden que guardarFoto() documenta invertido.
+        TARJETA.remove(ruta);            // que no exista no es un error: el estado
+                                         // final es el pedido
+        code = quitarDelManifiesto(borrarN) ? 200 : 500;
+    }
+
+    // El contador de NVS NO se toca (§3): reutilizar el número de una foto borrada
+    // colisionaría con lo que siga en el manifiesto. El hueco es correcto.
+    if (code != 200) Serial.printf("[borrar] -> %d\n", code);
+    borrarDueno = nullptr;
+
+    if (code == 200) request->send(200, "application/json", "{\"ok\":true}");
+    else             request->send(code, "text/plain", "");
+}
+
+// ============================================================================
 // Servidor web — contrato HTTP (§4)
 // ============================================================================
 static void setupWebServer() {
@@ -709,14 +858,27 @@ static void setupWebServer() {
         // pero vacío da 0 y es indistinguible de uno que falta, así que se va a
         // buscar el .gz, tampoco lo encuentra, y pone 404 sobre una respuesta
         // que el request layer ya juzga inválida.
-        File m = TARJETA.open("/manifest.txt", FILE_READ);
-        const bool vacio = !m || m.size() == 0;
-        if (m) m.close();
+        //
+        // Y hay que distinguir «no hay manifiesto» de «no se pudo abrir», porque
+        // tratarlos igual hace que la página MIENTA: con los descriptores agotados
+        // esto contestaba 200 con cuerpo vacío y el teléfono decía «el marco no
+        // tiene fotos» sobre una tarjeta con 30. Medido en placa.
+        if (!TARJETA.exists(MANIFIESTO)) {
+            request->send(200, "text/plain", "");   // sin fotos: estado legítimo
+            return;
+        }
+        File m = TARJETA.open(MANIFIESTO, FILE_READ);
+        if (!m) {
+            request->send(503, "text/plain", "");   // transitorio, y reintentable
+            return;
+        }
+        const bool vacio = m.size() == 0;
+        m.close();
         if (vacio) {
             request->send(200, "text/plain", "");
             return;
         }
-        request->send(TARJETA, "/manifest.txt", "text/plain");
+        request->send(TARJETA, MANIFIESTO, "text/plain");
     });
 
     server.on("/photo", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -725,23 +887,43 @@ static void setupWebServer() {
             request->send(400, "text/plain", "n");
             return;
         }
-        const String path = "/fotos/" + p->value();
-        if (!TARJETA.exists(path)) {
-            request->send(404, "text/plain", "Not Found");
+
+        // LA GUARDA QUE FALTABA, y costó una caída del marco. AsyncFileResponse
+        // retiene un descriptor ABIERTO mientras dura la descarga, y el VFS monta
+        // con un tope de descriptores. La galería pide decenas de fotos casi a la
+        // vez, así que sin acotar aquí se agotan — y no se queda sin fotos solo la
+        // galería: `loop()` deja de poder abrir el manifiesto, la pantalla cae a
+        // «No hay fotos», y el fallo remata en abort() y reinicio.
+        //
+        // El cliente educado no basta: la concurrencia es disciplina suya y el
+        // servidor no puede confiar en ella — el mismo razonamiento que el 503 de
+        // /upload. Se reserva margen para lo que loop() necesita.
+        if (fotosEnVuelo >= PHOTO_MAX_VUELO) {
+            request->send(503, "text/plain", "ocupado");
             return;
         }
-        request->send(TARJETA, path, "image/jpeg");
+
+        const String path = "/fotos/" + p->value();
+        // Abrir aquí y no fiarse de exists(): con los descriptores agotados
+        // exists() dice «no existe» sobre una foto que sí está, y de ahí salían
+        // 404 que mentían. Con el File en mano la distinción es real.
+        File f = TARJETA.open(path, FILE_READ);
+        if (!f) {
+            request->send(TARJETA.exists(path) ? 503 : 404, "text/plain", "");
+            return;
+        }
+
+        fotosEnVuelo++;
+        request->onDisconnect([]() { if (fotosEnVuelo) fotosEnVuelo--; });
+        request->send(f, path, "image/jpeg");
     });
 
     server.on("/upload", HTTP_POST, subidaFin, subidaChunk);
 
-    server.on("/delete", HTTP_POST, [](AsyncWebServerRequest* request) {
-        // Responder 200 sobre un borrado que no ocurrió es la trampa que §4
-        // documenta como medida en placa; mientras no haya tarjeta, se dice que
-        // no está. El parser del cuerpo JSON de referencia está en banco.cpp
-        // (borrarCuerpo), junto con el hallazgo del Content-Type.
-        request->send(503, "text/plain", "sin tarjeta");
-    });
+    // CINCO argumentos: el nullptr es el slot de onUpload (no hay multipart) y el
+    // último es onBody, que es por donde llega el JSON. Con la forma de tres el
+    // cuerpo no se ve nunca.
+    server.on("/delete", HTTP_POST, borrarFin, nullptr, borrarCuerpo);
 
     // No es hipotético: el navegador pide /favicon.ico solo. Cinco rutas y ningún
     // catch-all significa que todo lo demás cae aquí.

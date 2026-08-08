@@ -116,6 +116,14 @@ static inline bool montarTarjeta(int sck, int miso, int mosi, int cs, uint32_t h
   dev.gpio_cs = (gpio_num_t)cs;
 
   esp_vfs_fat_mount_config_t cfg = VFS_FAT_MOUNT_DEFAULT_CONFIG();
+  // max_files se queda en el default de 5, y SUBIRLO ES UNA TRAMPA CARA que ya se
+  // pagó una vez: cada descriptor de FatFs arrastra su buffer de sector, así que
+  // pasar de 5 a 12 costó ~30 KB de heap medidos en placa (el libre antes de
+  // autoConnect cayó de 110,324 a 80,644). Y como el fallo de la galería es por
+  // HEAP y no por descriptores —el abort() sale de un `new` que no puede ni
+  // asignar la excepción—, subirlo empeora exactamente lo que se intentaba
+  // arreglar: el marco pasó de caerse con ~30 conexiones a caerse con 4.
+  // El tope de verdad es el de peticiones concurrentes: PHOTO_MAX_VUELO en main.cpp.
   // format_if_mount_failed se queda en false A PROPÓSITO: formatear sola la
   // tarjeta ante un montaje fallido borraría las fotos del marco, que es el
   // único sitio donde viven. Un fallo de montaje se reporta, no se "arregla".

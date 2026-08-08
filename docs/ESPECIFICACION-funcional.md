@@ -789,20 +789,55 @@ El formato `WIFI:` es reconocido nativamente por Android e iOS: al escanearlo co
 
 #### El QR de uso diario tiene que salir solo al terminar el provisioning
 
-**Pendiente de implementar.** El toque largo no basta y esta sección ya lo admitía dos párrafos más abajo: *«nadie le va a explicar a la persona destinataria que ese gesto existe»*. Eso está bien para una ruta de recuperación, pero no para el camino principal.
+**HECHO, y verificado en placa el 8-ago-2026** en el primer recorrido completo de placa virgen — el primero en el que estos dos QR se han visto en una pantalla. El toque largo no basta y esta sección ya lo admitía dos párrafos más abajo: *«nadie le va a explicar a la persona destinataria que ese gesto existe»*. Eso está bien para una ruta de recuperación, pero no para el camino principal.
 
 El momento en que alguien acaba de meter la contraseña del WiFi es exactamente el momento en que quiere subir fotos, y ahora mismo el único puente hasta la página es teclear una IP que nadie le ha dicho — o descubrir un gesto invisible. Es la regla 1 rota justo en el último metro del arranque.
 
 **El disparador es «se acaba de provisionar», NO «se conectó».** Pintarlo en cada arranque con éxito dejaría un QR unos segundos cada vez que se enchufa el marco: se ve a proyecto y no a producto, que es el mismo argumento por el que el QR de setup no se pinta incondicionalmente.
 
-La condición sale gratis porque ya se calcula: **`getWiFiIsSaved()` era falso antes de `autoConnect()` y la conexión tuvo éxito**. O sea que hubo portal y ahora hay red.
+La condición de partida sale gratis porque ya se calcula: **`getWiFiIsSaved()` era falso antes de `autoConnect()` y la conexión tuvo éxito**. O sea que hubo portal y ahora hay red.
 
 > Esa condición **solo es fiable con `WiFi.mode(WIFI_STA)` delante**. Sin esa línea `getWiFiIsSaved()` devuelve «sí» sobre una placa virgen —ver más arriba en esta misma sección—, y el QR de uso diario no saldría nunca en el único arranque que lo necesita. Es el mismo bug que se comía el QR de setup, con el segundo síntoma escondido detrás.
 
-**Decidido, 7-ago-2026: se quita con la primera petición a `/` o a los 60 s, lo que llegue antes — y hacen falta LAS DOS.** Esta sección las planteaba como alternativas y no lo son:
+#### Pero no se pinta en ese arranque: el marco REINICIA primero
+
+**Medido el 8-ago-2026, y es un fallo que solo existe en el arranque que provisiona.** Justo después de que `autoConnect()` vuelve, `server.begin()` falla:
+
+```text
+[112617][E][AsyncTCP.cpp:1542] begin(): bind error: -8
+```
+
+`-8` es `ERR_USE` de LWIP: **el `WebServer` del portal cautivo todavía tiene tomado el puerto 80** cuando el `AsyncWebServer` intenta enlazarlo. No es sorpresa ni fallo propio — WiFiManager lo lleva escrito en su `shutdownConfigPortal()`, encima de un `server->stop()` que no basta:
+
+```cpp
+// @todo what is the proper way to shutdown and free the server up
+// debug - many open issues aobut port not clearing for use with other servers
+```
+
+**Lo que costaba es la regla 1 entera.** Con el bind caído el servidor no escucha nunca, así que el QR de uso diario apunta a una página que no carga; y como `paginaAbierta` la pone el handler de `/`, el QR tampoco puede retirarse salvo por vencimiento. Verificado en placa: `curl` a la IP daba «connection refused» mientras el marco decía estar conectado.
+
+**Y en un arranque normal no ocurre jamás**, porque WiFiManager no levanta su portal y el puerto está libre. O sea: un fallo que vive únicamente en el único arranque en el que alguien provisiona el regalo, y que ninguna prueba con credenciales guardadas podía enseñar.
+
+**La salida es reiniciar**, con una bandera en NVS que sobreviva:
+
+| | |
+|---|---|
+| Al volver `autoConnect()` con `!habiaCredenciales` | escribir la bandera y `ESP.restart()` |
+| En el arranque siguiente | no hay portal → puerto 80 libre por construcción |
+| Quién dispara el QR | **la bandera**, porque `getWiFiIsSaved()` ya dice «sí» y la condición de arriba es falsa para siempre |
+
+Se prefirió a reintentar el `bind` desde `loop()`: reintentar solo se autocura **si** el puerto llega a liberarse, y eso no está medido. El reinicio no depende de acertar el mecanismo. Cuesta ~3 s de pantalla en negro, una vez en la vida del aparato, y de regalo le da al teléfono tiempo de soltar `Marco-Fotos` y volver a la red de casa antes de que salga el QR.
+
+**La bandera se borra al leerla, pero solo si el WiFi levantó.** Si el módem tarda más en arrancar que el marco y esa vuelta sale sin red, borrarla igual dejaría a quien acaba de provisionar sin QR para siempre y sin nada que hubiera hecho mal.
+
+**Decidido, 7-ago-2026: se quita con la primera petición a `/` o por temporizador, lo que llegue antes — y hacen falta LAS DOS.** Esta sección las planteaba como alternativas y no lo son:
 
 - Solo el **temporizador** lo quitaría con la persona todavía tecleando la dirección.
 - Solo la **petición HTTP** lo dejaría pintado indefinidamente si quien provisiona se distrae o se queda sin batería, y un QR permanente en la sala es regla 3.
+
+> **El temporizador son CINCO minutos, y el minuto original se midió corto** en el recorrido de placa virgen del 8-ago-2026: el QR venció antes de que diera tiempo a escanearlo. Lo que se lleva el rato no es sacar el teléfono — es que el iPhone tiene que soltar `Marco-Fotos`, que acaba de desaparecer, y reasociarse a la red de casa antes de poder abrir nada.
+>
+> Subirlo no reabre la regla 3, y el motivo es que **en el caso normal quien retira el QR no es el reloj: es la primera visita a `/`**. Verificado en placa — al abrir la página el QR desapareció y quedó la pantalla de debajo. El temporizador solo actúa cuando esa visita no llega nunca, que es exactamente el caso para el que existe. Es además el mismo reloj que esta sección le da al AP.
 
 Cuesta una bandera `volatile` en el handler de `/` y un deadline comprobado en `loop()`. La bandera se pone en `/` y no en `/list` ni en `/photo`: ésas llegan detrás de `/` de todas formas.
 
@@ -1219,7 +1254,7 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 8. ~~Confirmar pinout del PN2222A (zócalo hFE).~~ **Desaparece con el punto 7:** el transistor sale del diseño del backlight, junto con sus 470 Ω de base y el 10 kΩ.
 9. ~~Afinar velocidad SPI (27 → 40 → 80 MHz).~~ **Hecho, 7-ago-2026: 40 MHz.** Los tres binarios dieron **imagen limpia**, 80 MHz incluido, así que la elección no fue de estabilidad sino de margen: repintar una foto cuesta 77 ms a 40 MHz contra 45 a 80, y eso es invisible en un marco que cambia de imagen cada varios segundos. Tabla completa en el BOM.
 10. ~~Confirmar dirección I2C del BH1750.~~ **Hecho, 6-ago-2026: `0x23`**, con `ADDR` al aire, que es lo que asumía §7. Escaneo desde `[env:display]`. De paso salió que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
-11. **QR de uso diario al terminar el provisioning.** Necesita el display, así que va aquí; es una decisión de §5 tomada después de cerrar el pendiente #5. Hoy el único puente entre «acabo de configurar el WiFi» y «puedo subir fotos» es un gesto que nadie va a explicarle a quien reciba el marco. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5.
+11. ~~**QR de uso diario al terminar el provisioning.**~~ **Hecho y verificado en placa, 8-ago-2026**, en el recorrido completo de placa virgen. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5. De ese recorrido salió además un fallo que **solo existe en el arranque que provisiona**: `server.begin()` da `bind error: -8` porque el portal cautivo aún retiene el puerto 80, y el QR acababa apuntando a una página que no cargaba. Se corrige reiniciando tras provisionar, con bandera en NVS. Detalle en §5.
 12. ~~**Galería de lo ya cargado y `POST /delete`.**~~ **Hecho, 7-ago-2026.** Era lo único del contrato HTTP que la página no llamaba. Sin endpoints nuevos —`/list` y `/photo` bastaban— y **sin dependencias nuevas**: el cuerpo JSON se lee con `strstr`/`strchr` como en el banco, y ArduinoJson se descartó. Galería paginada de 60, multi-selección con una sola confirmación, y borrado **secuencial** porque cada `/delete` reescribe el manifiesto entero. Verificado en placa: `200`, `400` con `../manifest.txt`, `400` con un POST **sin cuerpo** —que es un fallo que el banco arrastra y aquí se cerró con guard de identidad—, `200` idempotente sobre un nombre que ya no existe, y **el contador de NVS sin retroceder**: tras borrar la `00000074`, la siguiente subida salió `00000075`. Detalle en §4.
 13. **Lector SD y coexistencia de los dos buses.** **Hecho, 7-ago-2026.** Montado
     en placa y probado con el display encendido a la vez, que era el riesgo real
@@ -1286,9 +1321,57 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
       que se midieron con fotos de prueba: una foto real tiene más entropía y
       decodificar es el 57 % del tiempo.
 
-    **Falta de esta pieza**: el recorrido completo de placa virgen —QR de setup →
-    portal → QR de uso diario → abrir la página—, y con él **el heap con el portal
-    cautivo abierto**, que es el número que decide si el buffer de 64 KB se queda
-    donde está.
+    ~~**Falta de esta pieza**: el recorrido completo de placa virgen.~~
+    **Hecho el 8-ago-2026**, de punta a punta y con los dos QR vistos en pantalla
+    por primera vez: QR de setup → unirse sin teclear contraseña → portal en
+    español de una página → **reinicio** → QR de uso diario → abrir la página →
+    subir fotos → reconectar solo y sin QR.
+
+    **El heap con el portal cautivo abierto son `minHist = 64,560 B`**, medido con
+    la tarjeta montada y todos los globales construidos. Muy por encima del umbral
+    que obligaría a mover el `malloc`, así que **el buffer de 64 KB se queda donde
+    está** y esa duda queda cerrada.
+
+    Dos cosas más que salieron de la tanda de 30 sobre el marco real:
+
+    - **`mayorBloque` = 25,588 B en las 35 subidas de la sesión, sin moverse un
+      byte.** La ruta de subida no fragmenta ni tras 34 escrituras.
+    - **El peso medio sube a 41.2 KB** (mediana 41,484 B, 23 de 34 por encima del
+      presupuesto), contra los 34.5 KB de la tanda previa al auto-llenado. Es el
+      costo previsto en §4: recortar sube el peso, y con el auto-llenado eso pasó
+      a ser el caso normal. El máximo repitió **61,836 B** al byte — misma foto,
+      encoder determinista — o sea que el margen contra el tope duro sigue en
+      **1.06×**.
+    - **El cambio de foto se alarga hasta 835 ms mientras hay una tanda subiendo**,
+      contra 298-329 ms en reposo. Es el mutex por volumen de FatFs serializando la
+      escritura de `async_tcp` con la lectura de `loop()`. El BOM lo tenía medido
+      desde el lado de la subida; desde el lado del display, no.
+
+#### Borrar en tanda frena el display 15×, y eso se ve como un borrado «fallido»
+
+Medido el 8-ago-2026 sobre el marco, con 26 borrados seguidos desde la galería:
+
+| Momento | total | empuje | heap |
+|---|---|---|---|
+| En reposo | 298 ms | 80.4 ms | +0 |
+| Durante la tanda de borrados | 1,384 ms | 646.6 ms | −16 |
+| Peor observado | **3,699 ms** | **1,233.6 ms** | **−272** |
+
+Mismo mecanismo que arriba —cada `/delete` reescribe el manifiesto entero y se
+serializa contra la lectura del JPEG—, pero **más agresivo que subir**, y con el
+dibujado dejando de ser neutro en heap, cosa que en reposo no ocurre nunca.
+
+**La consecuencia visible es que borrar la foto que está pintada en ese momento
+parece fallar.** Es el caso en que las dos tareas colisionan de frente. Verificado
+en el log: el firmware **no rechazó ni un solo borrado** —cero respuestas distintas
+de `200` en los 26— así que lo que se agota es la paciencia del cliente, no el
+servidor. Que el reintento «funcione» lo confirma por otra vía: `/delete` es
+idempotente y un nombre que ya no existe también da `200`.
+
+O sea que no se pierde el borrado: se completa y no se reporta. Incómodo, no
+destructivo, y **no se arregla subiendo el timeout** — la salida, si alguna vez
+molesta, es que la galería no lance el siguiente `/delete` hasta que el anterior
+conteste, que es la disciplina de concurrencia 1 que §4 ya exige. Queda anotado
+antes que construido: con 26 borrados no se perdió ninguno.
 
 16. Integración y modelado de la carcasa.

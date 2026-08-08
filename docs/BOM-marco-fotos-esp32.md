@@ -551,6 +551,47 @@ streaming con respuesta por trozos.
 tarjeta ante un montaje fallido borraría las fotos, que es el único sitio donde
 viven. Un fallo de montaje se reporta, no se «arregla».
 
+#### Contacto intermitente del slot, 8-ago-2026 — y por qué parecían dos averías
+
+Tras sacar la tarjeta para vaciarla desde la Mac y volver a meterla —la primera
+manipulación en toda la sesión— el lector empezó a fallar de dos formas que
+parecían no tener relación:
+
+- **Tres arranques seguidos sin montar**, y luego dos montando bien.
+- Con la tarjeta montada, **una escritura que se corta a la quinta foto**:
+  `sdmmc_write_blocks failed (0x108)` y `(0x105)`, tras un `0x107` (`ESP_ERR_TIMEOUT`).
+
+**El segundo síntoma deja el volumen inservible también para LEER**, y eso no es
+obvio: FatFs se queda con el buffer de sector sucio e intenta volcarlo en cada
+`open()` posterior, así que un camino de solo lectura empieza a escupir errores de
+**escritura** cada 30 s, al ritmo de `FOTO_PERIODO_MS`. La consecuencia visible es
+que `/list` contesta vacío y la galería dice «el marco todavía no tiene fotos»
+sobre una tarjeta que sí las tiene.
+
+**El diagnóstico que lo cerró fue sacar la tarjeta y mirarla en la Mac**, y vale la
+pena como método porque separa tarjeta de lector en un paso:
+
+| Comprobado en la Mac | Qué descarta |
+|---|---|
+| `diskutil verifyVolume` → `fsck_msdos` código 0 | corrupción del sistema de archivos |
+| Las 4 fotos escritas, con sus bytes **exactos** y JPEG válidos | que las escrituras no llegaran |
+| `manifest.txt` con sus 4 líneas correctas | que el anexado fallara |
+
+O sea que la tarjeta estaba sana y el firmware había hecho su trabajo. **Lo que
+falló fue el contacto del slot**, y reasentarla lo arregló: después aguantó una
+tanda de 30 sin un solo fallo. Un chip muriéndose habría dejado corrupción.
+
+Si vuelve: reasentar, mirar contactos y soldadura, y **bajar el reloj de 20 a 10
+MHz** en `montarTarjeta()` como prueba discriminante — una conexión marginal
+aguanta a 10 y falla a 20; una tarjeta muerta falla a las dos. Se pierde lectura
+(1.21 → 0.78 MB/s) y poco más; las cuatro frecuencias están medidas más abajo.
+
+**Y hay un detalle de `guardarFoto()` que confunde si no se sabe:** deja un JPEG de
+0 bytes en `/fotos/`. El código **sí** limpia —hace `TARJETA.remove(ruta)` cuando
+los bytes escritos no cuadran— pero con la tarjeta ya muda **hasta el `remove`
+falla**. El archivo huérfano no es un bug del firmware, es el mismo fallo un paso
+más allá.
+
 #### La pega, y es real: dos dueños incompatibles del mismo bus
 
 El `SPIClass` de Arduino arranca SPI2 con `spiStartBus` de `esp32-hal-spi`; el
@@ -716,6 +757,20 @@ entran fotos al marco.
 | Después de `autoConnect()` | 109,336 | 42,996 |
 | **Durante una subida, AsyncTCP arriba** | **~87,000** | **25,588** |
 
+> **El suelo con el PORTAL CAUTIVO abierto ya está medido, 8-ago-2026, y era lo
+> que faltaba para cerrar esta decisión.** En el recorrido de placa virgen, con la
+> tarjeta montada y los cinco globales construidos: **`minHist = 64,560 B`**. Muy
+> por encima de los ~40 KB por debajo de los cuales habría que mover el `malloc`
+> detrás de `autoConnect()`, así que **la posición actual se queda** y no hay que
+> tocar nada.
+>
+> Ojo con qué cifra se cita: `minHist` es `ESP.getMinFreeHeap()`, o sea el mínimo
+> **acumulado desde el arranque**, y por eso la línea `[etapa2-postAutoConnect]`
+> sirve aunque `medir()` no llegue a correr mientras el portal bloquea. El
+> `mayorBloque` de esa misma línea **no** vale para esto: es el del instante
+> posterior y no dice nada del portal. Para capturarlo haría falta una llamada
+> desde `setAPCallback`, y con este margen no hace falta.
+
 Por eso el `malloc` va en `setup()` y no se libera nunca. **La posición dentro de
 `setup()` tampoco es libre**, y son dos restricciones que tiran en sentidos
 opuestos:
@@ -820,6 +875,10 @@ Bajar del presupuesto no compra capacidad; pasarse la corta a la mitad.
 O sea que la fila que describe la realidad de este proyecto no es la de 32 KB sino la de 40: **~121,000 fotos**, no 242,000. Sigue sin ser una restricción —son más fotos de las que nadie va a tomar— pero el orden de magnitud que hay que citar es ése. El piso de calidad `q = 0.620` es el régimen normal, no la excepción.
 
 **El peor caso medido no ha dejado de subir, y por eso no se usa como cota.** Van 40.3 KB (tirol blanco), 43.0 (malla metálica perforada), 50.7 (un perro sobre césped) y **60.4 KB (61,836 B)**, el récord del 7-ago-2026 dentro de una tanda normal de 30 fotos de iPhone. Ese récord vale aunque la tanda fuera contra el banco y no contra el marco: **el JPEG lo produce entero el navegador**, y qué servidor lo recibe no cambia un byte. Otra tanda de 30 el mismo día, ésta sí contra el marco, topó en 51,898 B — o sea que el récord depende del contenido y no del recorrido. Todas son el mismo fenómeno: la búsqueda binaria toca el suelo de calidad y se acepta por encima del presupuesto, que es el comportamiento correcto de §4. Cualquier constante dimensionada contra el récord del día envejece en la siguiente tanda — este párrafo lleva cuatro revisiones al alza y es la prueba.
+
+**8-ago-2026: el récord NO subió, y por primera vez se repitió al byte.** Una tanda de 30 contra el marco volvió a topar en **61,836 B exactos** — el mismo número del 7-ago. Misma foto y encoder determinista: mismo archivo. Sirve de control de que la página produce salidas reproducibles, no de que el récord se haya estabilizado.
+
+**Lo que sí subió es la media, y era lo previsto:** mediana **41,484 B**, media **41,177 B** y **23 de 34 por encima del presupuesto**, contra los 34.5 KB y 15 de 30 de la tanda anterior al auto-llenado. Recortar sube el peso, y con el auto-llenado eso dejó de ser la excepción. El margen contra el tope duro sigue en **1.06×**, así que la advertencia de arriba no se relaja.
 
 > Se intentó lo obvio —igualar el búfer de retención del banco al tope duro, para que no hubiera fotos sin verificar— y **se midió que no sale a cuenta**: `mayorBloque` cae de 34804 a 16372 B tras levantar el WiFi, la mitad del bloque contiguo mayor, con AsyncTCP pidiendo memoria por conexión. Ese búfer no lo limita el tamaño de las fotos sino el heap, y es un lujo del banco que el firmware real no va a tener. Se queda en 48 KB, y una foto mayor se reporta como «no retenida», que no es corrupción.
 

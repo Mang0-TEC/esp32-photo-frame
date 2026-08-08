@@ -77,6 +77,11 @@ static constexpr char MANIFIESTO[] = "/manifest.txt";
 static constexpr char CRUDO[]      = "/manifest.raw";   // volcado sin ordenar
 static constexpr char TEMPORAL[]   = "/manifest.tmp";
 
+// Bandera de NVS que sobrevive al reinicio de después de provisionar y es lo
+// único que se acuerda de que hay que pintar el QR de uso diario. Va en el
+// namespace «marco», el mismo del contador de fotos.
+static constexpr char NVS_QR_USO[] = "qrUso";
+
 // §6 solo pide «cada varios segundos». 30 s es ritmo de sala: se baja a 5 s
 // durante el bring-up para no esperar en cada prueba.
 static constexpr uint32_t FOTO_PERIODO_MS = 30000;
@@ -145,9 +150,18 @@ static bool   desbordo   = false;
 // que ledPedido y por el mismo motivo.
 static volatile bool paginaAbierta = false;
 static uint32_t qrHasta = 0;   // deadline en ms; 0 = no hay QR en pantalla
-// Un minuto es largo a propósito: hay que sacar el teléfono, desbloquearlo y
-// abrir la cámara.
-static constexpr uint32_t QR_MS = 60000;
+// CINCO minutos, y el minuto que había aquí antes se midió corto en el primer
+// recorrido de placa virgen (8-ago-2026): el QR de uso diario venció antes de
+// que diera tiempo a escanearlo. Lo que se lleva el rato no es sacar el
+// teléfono, es que el iPhone tiene que soltar `Marco-Fotos` —que acaba de
+// desaparecer— y reasociarse a la red de casa antes de poder abrir nada.
+//
+// Subirlo no deja un QR permanente en la sala, que es lo que la regla 3
+// prohíbe, porque el temporizador NO es quien lo retira en el caso normal: lo
+// retira la primera petición a `/`, o sea la persona abriendo la página. El
+// reloj es solo la salida para cuando esa visita no llega nunca. Y el mismo
+// valor que §5 le da al AP: cinco minutos.
+static constexpr uint32_t QR_MS = 300000;
 
 // Versión 3: 29×29 módulos y 53 bytes de capacidad con ECC bajo. Las dos cargas
 // de este firmware miden 38 y ~22, así que entran con holgura.
@@ -387,6 +401,45 @@ void setup() {
     const bool wifiOk = wm.autoConnect("Marco-Fotos", "fotos1234");
     medir("etapa2-postAutoConnect");
 
+    // Acabamos de provisionar: REINICIAR, y no es cautela sino la única salida
+    // que no depende de acertar un tiempo.
+    //
+    // Medido en placa el 8-ago-2026, primer recorrido de placa virgen: aquí
+    // mismo, server.begin() falla con `bind error: -8` —ERR_USE de LWIP— porque
+    // el WebServer del portal cautivo todavía tiene tomado el puerto 80. No es
+    // un fallo nuestro ni una sorpresa: WiFiManager lo lleva escrito en su
+    // propio shutdownConfigPortal(), «many open issues aobut port not clearing
+    // for use with other servers», justo encima de un server->stop() que no
+    // basta. Con el bind caído el servidor NUNCA escucha, así que el QR de uso
+    // diario apunta a una página que no carga — y como `paginaAbierta` la pone
+    // el handler de `/`, el QR tampoco se puede retirar salvo por vencimiento.
+    //
+    // Y esto SOLO pasa aquí: en un arranque normal WiFiManager no levanta su
+    // portal, el puerto está libre y el bind entra a la primera. O sea que es un
+    // fallo que solo existe en el único arranque en el que alguien provisiona el
+    // regalo, y que ninguna prueba con credenciales guardadas podía enseñar. La
+    // regla 1 entera, en el último metro.
+    //
+    // Tras el reinicio no hay portal, el puerto 80 está libre por construcción y
+    // la bandera de NVS es la que se acuerda de que hay que pintar el QR de uso
+    // diario — porque para entonces getWiFiIsSaved() ya dice «sí» y la condición
+    // de abajo, sola, no volvería a cumplirse jamás.
+    //
+    // Se prefirió a reintentar el bind desde loop(): reintentar se autocura solo
+    // si el puerto llega a liberarse, y eso no está medido. Esto no depende del
+    // mecanismo.
+    if (wifiOk && !habiaCredenciales) {
+        Preferences p;
+        if (p.begin("marco", false)) {
+            p.putBool(NVS_QR_USO, true);
+            p.end();
+        }
+        Serial.println("[provisioning] listo — reiniciando para liberar el puerto 80");
+        Serial.flush();
+        delay(100);
+        ESP.restart();
+    }
+
     if (wifiOk) {
         Serial.print("[OK] WiFi conectado, IP = ");
         Serial.println(WiFi.localIP());
@@ -420,12 +473,33 @@ void setup() {
     // que quiere subir fotos, y hasta aquí el único puente era teclear una IP que
     // nadie le ha dicho.
     //
-    // La condición sale gratis porque ya se calculó arriba, pero SOLO es fiable
-    // con el WiFi.mode(WIFI_STA) de más arriba: sin él getWiFiIsSaved() devuelve
-    // «sí» sobre una placa virgen y este QR no saldría nunca en el único arranque
-    // que lo necesita. Es el mismo bug que se comía el QR de setup, con el
-    // segundo síntoma escondido detrás.
-    if (wifiOk && !habiaCredenciales) {
+    // El disparador NO puede ser `!habiaCredenciales`, y esto cambió el
+    // 8-ago-2026: el arranque que provisiona ya no llega hasta aquí, porque
+    // reinicia arriba para soltar el puerto 80. En el arranque de después las
+    // credenciales YA están guardadas, así que esa condición es falsa siempre y
+    // el QR no saldría nunca. Quien se acuerda es la bandera de NVS.
+    //
+    // Se borra al leerla, o el QR volvería a salir en cada arranque a partir de
+    // aquí — que es exactamente el «se ve a proyecto» que esta rama evita. Pero
+    // SOLO si el WiFi levantó: si el módem tarda más que el marco en arrancar y
+    // esta vuelta sale sin red, borrarla igual dejaría a quien acaba de
+    // provisionar sin QR para siempre y sin nada que hubiera hecho mal. Con la
+    // bandera intacta, el siguiente arranque lo pinta.
+    //
+    // El WiFi.mode(WIFI_STA) de más arriba sigue siendo imprescindible, ahora
+    // por el otro extremo: es lo que hace que `habiaCredenciales` sea falso de
+    // verdad en la placa virgen y por tanto que la bandera llegue a escribirse.
+    bool recienProvisionado = false;
+    {
+        Preferences p;
+        if (p.begin("marco", false)) {
+            recienProvisionado = p.getBool(NVS_QR_USO, false);
+            if (recienProvisionado && wifiOk) p.remove(NVS_QR_USO);
+            p.end();
+        }
+    }
+
+    if (wifiOk && recienProvisionado) {
         drawUsageQR();
     } else if (haySD) {
         // La primera foto va DESPUÉS del bloque de WiFi: mientras autoConnect()

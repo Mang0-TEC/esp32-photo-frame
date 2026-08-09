@@ -14,7 +14,7 @@
 // y se accede por TARJETA, porque la librería SD de Arduino no monta estas
 // tarjetas. El porqué, medido, está en tarjeta.h.
 #include <TJpg_Decoder.h>
-#include <BH1750.h>
+#include "luz.h"       // TSL2561. Ahí está por qué no se usa librería de sensor
 #include <WiFiManager.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
@@ -46,7 +46,6 @@ constexpr uint8_t PIN_SD_CS   = 26;
 // Periféricos
 // ============================================================================
 TFT_eSPI tft = TFT_eSPI();
-BH1750 lux;
 AsyncWebServer server(80);
 LedRGB led(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 
@@ -170,15 +169,63 @@ static constexpr uint8_t QR_LADO    = 4 * QR_VERSION + 17;               // 29
 static constexpr size_t  QR_BUF     = (QR_LADO * QR_LADO + 7) / 8;       // 106 B
 
 // ============================================================================
-// Brillo automático (BH1750)
+// Brillo automático (TSL2561)
 // ============================================================================
 static uint8_t  currentBacklight = 255;
-static bool     bh1750Ok         = false;
+static bool     luzOk            = false;
 static uint32_t ultimaLuzMs      = 0;
-// La conversión en CONTINUOUS_HIGH_RES_MODE tarda 120 ms: pedirla en cada loop()
-// devolvía doce veces la misma lectura. Y el suavizado va atado al tiempo, no a
-// la frecuencia del loop(), que va a cambiar al entrar la decodificación de JPEG.
+// Lecturas fallidas seguidas antes de dar el sensor por muerto. A 200 ms por
+// lectura es un segundo — suficiente para no confundir un glitch del bus con
+// una avería, y poco para que nadie se quede mirando una pantalla congelada.
+static uint8_t  luzFallos        = 0;
+static constexpr uint8_t LUZ_FALLOS_MAX = 5;
+// El sensor integra durante 101 ms: pedir la lectura en cada loop() devolvería
+// la misma media docena de veces. Y el suavizado va atado al tiempo, no a la
+// frecuencia del loop(), que cambia con la decodificación de JPEG.
+//
+// 200 ms se queda como estaba con el BH1750, y eso NO es inercia: el peor caso
+// del tiempo de integración con fosc en su mínimo de 690 kHz son 108 ms
+// (81 × 918 / fosc), o sea 1.85x de margen. Así la rampa de §7 tampoco cambia
+// —204 pasos entre bandas extremas × 200 ms ≈ 41 s— y no hay que rejustificarla.
 static constexpr uint32_t LUZ_PERIODO_MS = 200;
+static_assert(LUZ_PERIODO_MS > LUZ_INTEGRACION_MS,
+              "el sondeo tiene que ser mas lento que la integracion del TSL2561, "
+              "o updateBrightness() lee dos veces la misma conversion");
+
+// Banda de brillo actual: 0 oscuro, 1 tenue, 2 brillante. Es ESTADO y no una
+// variable local porque la histéresis de updateBrightness() se apoya en de
+// dónde se viene. Arranca en 2 para que un sensor que no responde deje la
+// pantalla encendida, que es lo que pide §7.
+static uint8_t luzNivel = 2;
+
+// Backlight de cada banda. El 0 de la banda oscura es DELIBERADO y es lo que §7
+// pedía desde el principio —«oscuridad sostenida → backlight apagado»—; el 51
+// que había antes era el código quedándose corto, no una decisión.
+//
+// Medido en placa el 8-ago-2026: el cuarto con los focos LED encendidos de noche
+// da 137 lux, y el display a brillo pleno molesta en esa sala. Con la tarjeta
+// dentro y sin luz, lo que se quiere es pantalla apagada, no una foto tenue.
+//
+// **La rampa es la que aporta el «sostenida», sin código extra**: bajar de la
+// banda media a 0 son 128 escalones de 200 ms, o sea ~26 s de oscuridad continua
+// antes de apagarse del todo, y cualquier luz que vuelva lo revierte a medio
+// camino. Por eso no hace falta un temporizador aparte.
+//
+// Ojo al coste: con el 0 dentro, el recorrido extremo pasa de 204 a 255
+// escalones, o sea de ~41 s a ~51 s. Sigue siendo el ritmo lento a propósito.
+static constexpr uint8_t LUZ_BRILLO[3] = {0, 128, 255};   // apagado, 50 %, 100 %
+
+// Los umbrales de §7. SON HERENCIA DEL BH1750 y nunca se validaron contra la
+// sala donde va a vivir el marco: se eligieron describiendo «cuarto iluminado»
+// y «luz tenue de noche», no midiendo. La tecla 'L' del banco del display saca
+// los lux reales en las tres condiciones, y de ahí salen los números buenos.
+//
+// Calibrarlos ahí absorbe además las dos incertidumbres del sensor que NO se
+// pueden cerrar leyendo: el juego de coeficientes del encapsulado (≤30 % con
+// luz incandescente) y la tolerancia de fábrica del propio chip, que es de
+// ±35-40 % (datasheet, Nota 8).
+static constexpr float LUZ_UMBRAL_ALTO = 100.0f;
+static constexpr float LUZ_UMBRAL_BAJO =  10.0f;
 
 // ============================================================================
 // Forward declarations
@@ -225,9 +272,16 @@ static void autocomprobar() {
     // 106 bytes de pila en silencio — que es justo el fallo que no se diagnostica.
     const bool okQR = qrcode_getBufferSize(QR_VERSION) == QR_BUF;
 
-    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)  qrBuf: %s (%u)\n",
+    // La fórmula de lux del TSL2561, contra los dos pares de la tabla de
+    // responsividad del datasheet. Corre SIN sensor, que es lo que la hace útil:
+    // los cinco tramos y la normalización son lo único no trivial que se dejó de
+    // delegar a una librería, así que tienen que gritar si alguien los toca.
+    const bool okLux = luzLuxOk();
+
+    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)  qrBuf: %s (%u)  lux: %s\n",
                   ok ? "ok" : "*** FALLA ***", okFade ? "ok" : "*** FALLA ***", medio,
-                  okQR ? "ok" : "*** FALLA ***", (unsigned)QR_BUF);
+                  okQR ? "ok" : "*** FALLA ***", (unsigned)QR_BUF,
+                  okLux ? "ok" : "*** FALLA ***");
 }
 
 // ============================================================================
@@ -330,12 +384,18 @@ void setup() {
         }
     }
 
-    if (lux.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
-        bh1750Ok = true;
-        Serial.println("[OK] BH1750 detectado");
+    if (luzIniciar()) {
+        luzOk = true;
+        Serial.printf("[OK] TSL2561 en 0x%02X\n", LUZ_DIR);
     } else {
-        // Degradación elegante (§7): brillo fijo, nunca pantalla apagada.
-        Serial.println("[WARN] BH1750 no detectado — brillo fijo");
+        // Degradación elegante (§7): brillo fijo, nunca pantalla apagada. Con
+        // luzNivel arrancando en 2, «fijo» quiere decir al 100 %.
+        //
+        // Si esto sale con el sensor conectado, lo primero que hay que mirar NO
+        // es el cableado sino la DIRECCIÓN: el pin ADDR del TSL2561 tiene tres
+        // estados y LUZ_DIR es un supuesto hasta que el escaneo del banco lo
+        // cierre. La tecla `i` de [env:display] enumera el bus entero.
+        Serial.printf("[WARN] TSL2561 no responde en 0x%02X — brillo fijo\n", LUZ_DIR);
     }
 
     // El buffer de subida se pide UNA VEZ y no se libera nunca. La posición no es
@@ -572,30 +632,78 @@ static void handleTouch() {
 }
 
 // ============================================================================
-// Brillo automático (BH1750)
+// Brillo automático (TSL2561)
 // ============================================================================
 static void updateBrightness() {
-    if (!bh1750Ok) return;
+    if (!luzOk) return;
 
     const uint32_t ahora = millis();
     if (ahora - ultimaLuzMs < LUZ_PERIODO_MS) return;
     ultimaLuzMs = ahora;
 
-    const float luxVal = lux.readLightLevel();
-    // readLightLevel devuelve negativos en error (-1 sin bus, -2 lectura mala).
-    // Sin este guard, un sensor que se rompe a los seis meses cae en la rama de
-    // «oscuro» y deja la pantalla al 20 % para siempre. §7 pide brillo fijo, y
-    // bh1750Ok solo cubre el fallo de begin(), no el que aparece después.
-    if (luxVal < 0.0f) return;
+    uint16_t ch0, ch1;
+    // Un sensor que se rompe A LOS SEIS MESES no lo cubre luzOk, que solo mira
+    // el arranque.
+    //
+    // Y aquí NO basta con return, aunque lo pareciera: eso congela el brillo
+    // donde esté, y desde que la banda oscura vale 0 «donde esté» puede ser
+    // APAGADO. Un sensor que muere con el cuarto a oscuras dejaría la pantalla
+    // en negro para siempre, y ni encendiendo la luz volvería — que es
+    // exactamente lo que §7 prohíbe: «brillo fijo, no apagada. Nunca debe
+    // quedarse en negro por un sensor descompuesto».
+    //
+    // Con la banda oscura en 51 el fallo era inofensivo. Lo introdujo bajarla a
+    // 0, y por eso el guard tuvo que crecer con ella.
+    if (!luzLeer(&ch0, &ch1)) {
+        // Un fallo suelto es ruido del bus y no significa nada; varios seguidos
+        // es el sensor. A 200 ms por lectura, LUZ_FALLOS_MAX es un segundo.
+        if (++luzFallos < LUZ_FALLOS_MAX) return;
+        Serial.println("[luz] sensor sin responder — brillo fijo al 100 % (regla 2)");
+        luzOk = false;              // se queda así: recuperar exige reiniciar
+        luzNivel = 2;
+        setBacklight(255);
+        return;
+    }
+    luzFallos = 0;
 
-    uint8_t objetivo;
-    if      (luxVal > 100.0f) objetivo = 255;
-    else if (luxVal >  10.0f) objetivo = 128;
-    else                      objetivo = 51;    // ~20 %
+    // SATURADO NO ES POCA LUZ, y sin esta rama sería exactamente eso. Con ch0
+    // clavado en el fondo de escala, ch1 sigue subiendo, el cociente se va hacia
+    // 1 y la fórmula cae en su último tramo devolviendo casi cero: o sea que el
+    // SOL POR LA VENTANA APAGARÍA LA PANTALLA. A 101 ms y 16x el techo son
+    // ~4,100 lux con fluorescente y ~1,020 con incandescente, así que se alcanza
+    // de verdad junto a una ventana y no es un caso de laboratorio.
+    //
+    // Es también lo que hace innecesaria la autoganancia que traen las librerías
+    // de este chip: por encima del techo la respuesta correcta ya es «brillante».
+    const uint8_t anterior = luzNivel;
+    float luxVal;
+    if (ch0 >= LUZ_FONDO_ESCALA) {
+        luxVal   = -1.0f;      // saturado: no hay lux que reportar, solo un suelo
+        luzNivel = 2;
+    } else {
+        // La histéresis vive en luzBanda(), pura y comprobada al arrancar: una
+        // mal puesta no se ve mirando la pantalla, solo cronometrándola.
+        luxVal   = luzLux(ch0, ch1);
+        luzNivel = luzBanda(luzNivel, luxVal, LUZ_UMBRAL_ALTO, LUZ_UMBRAL_BAJO);
+    }
 
-    // Un escalón por lectura: el recorrido completo tarda ~40 s, que es el ritmo
-    // al que un cuarto se oscurece. TODO: histéresis, o el brillo oscilará en el
-    // borde de cada umbral.
+    // Solo al CAMBIAR de banda, no en cada lectura. Con el sondeo a 200 ms una
+    // traza por lectura serían cinco líneas por segundo toda la noche; los
+    // cambios de banda son unos pocos al día y son justo lo que hay que ver si
+    // alguien reporta «la pantalla se apagó sola». Se queda en producción por
+    // eso, no por la demo.
+    if (luzNivel != anterior) {
+        if (luxVal < 0.0f)
+            Serial.printf("[luz] SATURADO (ch0>=%u) -> banda %u, backlight %u\n",
+                          LUZ_FONDO_ESCALA, luzNivel, LUZ_BRILLO[luzNivel]);
+        else
+            Serial.printf("[luz] %.1f lux -> banda %u, backlight %u (ch0=%u ch1=%u)\n",
+                          luxVal, luzNivel, LUZ_BRILLO[luzNivel], ch0, ch1);
+    }
+
+    // Un escalón por lectura: el recorrido entre bandas extremas tarda ~41 s,
+    // que es el ritmo al que un cuarto se oscurece de verdad.
+    const uint8_t objetivo = LUZ_BRILLO[luzNivel];
     if      (currentBacklight < objetivo) setBacklight(currentBacklight + 1);
     else if (currentBacklight > objetivo) setBacklight(currentBacklight - 1);
 }

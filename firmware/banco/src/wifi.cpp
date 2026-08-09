@@ -8,7 +8,7 @@
 //  prueba antes que ningún otro hardware (§12, paso 6).
 //
 //  Este sketch es la ETAPA 1: WiFiManager y LedRGB, y NADA más. Sin tft,
-//  sin hspi, sin SD, sin BH1750, sin AsyncWebServer.
+//  sin hspi, sin SD, sin sensor de luz, sin AsyncWebServer.
 //
 //  La ETAPA 2 no vive aquí: es ../platformio.ini env:marco tal cual, que
 //  ya construye los cinco globales y corre tft.begin()/SD.begin() antes de

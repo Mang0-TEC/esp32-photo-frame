@@ -2,27 +2,25 @@
 
 **Proyecto:** Marco de fotos digital con servidor local WiFi
 **Presupuesto objetivo:** $700 MXN
-**Gastado:** $387 MXN · **Pendiente de comprar:** $42 MXN
+**Gastado:** $514 MXN · **Pendiente de comprar:** $0
 
 ---
 
 ## A. Comprar
 
-| # | Componente | SKU | Proveedor | Cant. | Precio |
-|---|---|---|---|---|---|
-| 3b | GY-302 BH1750 — **reposición** | — | Unit Electronics | 1 | $42 |
-| | **Subtotal** | | | | **$42** |
+**Nada. La tabla está vacía por primera vez en el proyecto.**
 
-**Todo lo demás ya se compró.** Pantalla, lector SD y sensor —los $261 de la
-tabla original— están en mano, y el ESP32 de reposición ($126) pasó a la tabla B.
-Total gastado: **$387**.
+Lo último que quedaba era la reposición del sensor de luz, y **no se repuso: se
+sustituyó**. El GY-302 (BH1750) que se estropeó en el banco el 7-ago-2026 se
+cambió por un **módulo TSL2561 de Handson Technology**, SKU `SSR1026`, **$127** —
+ya comprado y en mano. Con eso el gastado sube de $387 a **$514** y el pendiente
+baja a cero, contra un presupuesto objetivo de $700.
 
-**Por qué hay un BH1750 otra vez aquí.** El módulo comprado **se estropeó en el
-banco el 7-ago-2026**, después de haber respondido en `0x23` y cerrado el
-pendiente #4. Causa indeterminada; la avería está dentro del módulo y el
-diagnóstico completo está en la sección del BH1750, más abajo. **No bloquea el
-firmware**: la dirección ya está medida y §7 exige que sin sensor el marco se
-quede a brillo fijo, nunca en negro.
+**No es un reemplazo pin a pin, y por eso tiene sección propia más abajo.** El
+módulo lleva regulador de 3.3 V a bordo, así que su alimentación cambia de riel;
+`ADDR` deja de ser un cable y pasa a ser un puente soldable en la placa; aparece
+un `INT` que no se usa; y el chip entrega **dos canales crudos** en vez de un
+registro de lux ya calculado. El `0x23` medido del BH1750 no se transfiere.
 
 **El ESP32 de reposición** estuvo en esta tabla porque la unidad USB-C que había
 resultó defectuosa — no transmitía ni sincronizaba con esptool, ni en macOS ni en
@@ -47,13 +45,14 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 6 | Tarjeta SD 8 GB | FAT32, fotos en subdirectorio `/fotos/` |
 | 7 | Cargador USB 5 V ≥1 A + cable USB-C | Alimentación permanente |
 | 8 | Capacitor electrolítico 100 µF / 16 V | ✔ Confirmado |
-| 9 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas |
+| 9 | Capacitores cerámicos 100 nF (código "104") | ✔ Confirmado — 3 piezas, de las que **solo se usan 2**: display y lector SD. El tercero quedó libre al entrar el TSL2561, que trae cuatro condensadores propios y uno de ellos pegado al `VDD` del chip |
 | 10 | Transistor PN2222A (NPN, TO-92) | **Sin uso.** Era para el backlight en Caso A; `BL` resultó entrada lógica y va directo a GPIO19. Se queda en inventario |
 | 11 | LED RGB 5 mm **cátodo común** | ✔ Sustituye a los dos LEDs separados |
 | 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, y **no hace falta una tercera**: el backlight resultó Caso B y va directo a GPIO19, sin transistor y sin resistencia de base. Ver la nota de corriente por canal, abajo |
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
 | 15 | Filamento PLA | Carcasa y bisel |
+| 17 | Módulo **TSL2561** (Handson Technology, SKU `SSR1026`) — $127 ya pagados | **Sustituye al GY-302/BH1750**, que se estropeó en el banco. `Vin` va al riel de **5 V**, no a 3.3: lleva LDO propio (`662K`). Cinco pines, de los que se usan cuatro — `INT` se deja al aire. Dirección I2C **`0x39`, medida en placa**. Sección propia más abajo |
 | 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`). **Los `.ini` ya no fijan el puerto**: se quitaron `upload_port` y `monitor_port` de los cinco envs para que PlatformIO autodetecte, porque el sufijo del tty es el location ID del USB y cambia al mover el cable de puerto. Detalle del mecanismo en `CLAUDE.md`. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
 La placa micro-USB **no es la unidad final**: micro-USB es mal conector para un
@@ -114,10 +113,12 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 | Datos desde SD | `MISO` | 27 |
 | Chip select | `CS` | 26 |
 | Alimentación | `+5` / `GND` | **5 V** / GND |
-| **BH1750 — I2C** | | |
-| Datos | `SDA` | 21 |
-| Reloj | `SCL` | 22 |
-| Alimentación | `VCC` / `GND` | **3.3 V** / GND |
+| **TSL2561 — I2C** (en orden físico del header) | | |
+| Alimentación | `Vin` — pad cuadrado, pin 1 | **5 V** |
+| Tierra | `GND` — pin 2 | GND |
+| Reloj | `SCL` — pin 3 | 22 |
+| Datos | `SDA` — pin 4 | 21 |
+| Interrupción | `INT` — pin 5 | **NC** |
 | **LED RGB (cátodo común)** | | |
 | Azul (470 Ω) | pin 1 | 4 |
 | Verde (470 Ω) | pin 2 | 33 |
@@ -142,13 +143,17 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 
 - **Display (`VIN`) y lector SD (`+5`) van al riel de 5 V**, no a 3.3 V. Ambos traen regulación propia. Así el AMS1117 del devkit no disipa el consumo del backlight (~0.7 W) dentro de una carcasa sellada sin ventilación.
 - **En el lector SD, deja el pin `3.3V` sin conectar.** Solo se usa `+5`.
-- **BH1750 va a 3.3 V.** Consume microamperes; así las líneas I2C quedan al nivel lógico del ESP32.
+- **El TSL2561 va a 5 V, y esto CAMBIÓ respecto del BH1750.** El GY-302 iba a 3.3 V porque no llevaba regulador: el chip se alimentaba directo, y darle 5 V habría subido las líneas I2C por encima del nivel lógico del ESP32. Este módulo sí lo lleva —un `662K`, LDO de 3.3 V— así que entra en la misma regla que el display y el lector SD. **Las líneas I2C siguen a 3.3 V** porque las pull-ups cuelgan del riel *post-LDO*; en la sección del sensor está la medida que hay que hacer antes de conectarlo.
 - **El capacitor de 100 µF no es opcional.** Entre 5 V y GND, lo más cerca posible del lector SD. Sin él, los picos de escritura hunden el riel y resetean el ESP32 — falla intermitente y difícil de diagnosticar con la carcasa cerrada.
-- Un capacitor de 100 nF en VCC-GND de cada módulo: **display, lector SD y BH1750**. Son los tres cerámicos «104» de la tabla B.
+- Un capacitor de 100 nF en VCC-GND de cada módulo: **display y lector SD**. Son dos de los tres cerámicos «104» de la tabla B; **el tercero quedó libre** al entrar el TSL2561, que trae los suyos.
 
 > **El lector SD lleva LOS DOS, y no son redundantes** — es la duda que surge al leer las dos líneas de arriba seguidas. Cubren bandas de frecuencia distintas: el **electrolítico de 100 µF** es reserva de carga para las ráfagas de escritura (decenas de mA durante decenas de ms) y su ESR y ESL lo incapacitan para responder a un flanco de nanosegundos; el **cerámico de 100 nF** es desacoplo de alta frecuencia para los flancos del SPI y la lógica de la tarjeta, y no almacena nada útil a escala de milisegundos. Con solo el electrolítico el riel queda sucio en alta frecuencia; con solo el cerámico se hunde en cada escritura.
 >
 > **El cerámico va más cerca que el electrolítico**, lo más pegado posible a los pines `+5` y `GND` del módulo: el lazo corto es lo que lo hace funcionar. El electrolítico puede quedar un poco más atrás.
+>
+> **Y al sensor no le va NINGUNO de los dos, que es el caso opuesto y conviene leerlo aquí mismo.** El argumento de arriba es de corriente, y el TSL2561 consume **0.6 mA máximo y constante**: no hay ráfaga que amortiguar. Además el módulo ya trae cuatro condensadores propios —1 µF a la entrada del LDO, 10 µF y 0.1 µF a su salida, y **0.1 µF pegado al `VDD` del chip**—, así que el 100 nF que se iba a añadir habría quedado en paralelo con uno de 1 µF, diez veces mayor, y con un regulador de por medio. El trabajo de atender flancos junto al chip ya lo hace el suyo, que está más cerca de lo que jamás podría estar uno en el header.
+>
+> Eso salía del esquemático del módulo, que **ya falló en dos puntos verificables** contra la foto de su propia placa (dice 4.7 kΩ donde la foto muestra «103», y dibuja un puente de dos estados donde hay tres pads), así que quedó pendiente contar los condensadores de vista. **Se cierra el 8-ago-2026 por vía funcional, que es más fuerte que contarlos:** el módulo lee estable —1 % de dispersión en 10 muestras, y el mismo valor a lo largo de decenas de tandas— y **no produjo un solo error de I2C** salvo cuando se le desconectó el cable a propósito. Un desacoplo ausente se habría visto justo ahí. Si algún módulo de recambio diera lecturas ruidosas o errores de bus, el primer sospechoso es ése, y la salida es un 100 nF entre `Vin` y `GND` pegado al header.
 
 ### Backlight — determinar el tipo de pin `BL` antes de soldar
 
@@ -205,9 +210,9 @@ Prende en los dos, y con un potenciómetro en serie la atenuación se distingue 
 
 **Confirmado también de vista, desde `[env:display]` con GPIO19 haciendo el PWM:** la atenuación se ve **gradual y sin parpadeo** a lo largo de toda la escalera, y en duty 0 el backlight queda **completamente apagado**. O sea que el driver del módulo satura con los 0.88 mA que da un GPIO a 3.3 V, que era lo único que el voltímetro no podía contestar. `ledcAttach(19, 5000, 8)` y `ledcWrite` en sentido intuitivo, sin invertir.
 
-> La escalera del banco se recorre de 20 en 20 y a ese paso el salto **se siente brusco**. No es representativo: la rampa de producción avanza **un paso de PWM por lectura del BH1750** (§7), no veinte.
+> La escalera del banco se recorre de 20 en 20 y a ese paso el salto **se siente brusco**. No es representativo: la rampa de producción avanza **un paso de PWM por lectura del sensor de luz** (§7), no veinte.
 
-**Y el arranque en frío con `BL` al aire no puede dar destello**, por lo que ya está medido arriba: al aplicar 3.3 V la corriente **entra** al pin. Con un pull-up hacia VCC no entraría, saldría. Que entre significa que `BL` la drena hacia una base o un pull-down, así que con GPIO19 flotando no hay excitación y el backlight queda apagado — que es justo lo que `display.cpp` asume al poner el brillo a 0 antes de `tft.begin()`. Es inferencia de dos medidas, no observación directa; confirmarlo cuesta desconectar `BL` y enchufar, y no bloquea nada.
+**Y el arranque en frío con `BL` al aire no da destello — OBSERVADO, 8-ago-2026.** Con `BL` desconectado el backlight queda en brillo 0. Deja de ser inferencia: la versión anterior de este párrafo lo deducía de que al aplicar 3.3 V la corriente **entra** al pin (con un pull-up hacia VCC saldría, así que `BL` la drena hacia una base o un pull-down y con GPIO19 flotando no hay excitación). El razonamiento era correcto y ahora está confirmado de vista, que es lo que `display.cpp` asume al poner el brillo a 0 antes de `tft.begin()`.
 
 **Notas del procedimiento**, por si hay que repetirlo con otro módulo: en cuarto oscuro y mirando el **canto** del módulo, no el frente — con el ST7796S sin inicializar el panel puede quedar opaco y el backlight solo se ve como fuga de luz en los bordes. El riel del paso 3 sale del pin del propio devkit, con el devkit alimentado, para compartir referencia de tierra. Ninguno de los pasos daña nada.
 
@@ -273,10 +278,18 @@ distinguirse de un vistazo. Barrido con la tecla `c` del banco, el valor bueno e
 **`(255, 70, 0)`**. Vale para 220 Ω en el rojo y 470 Ω en el verde: **si esas
 resistencias cambian, hay que volver a barrerlo.**
 
-> **Lo que sigue sin medirse son las corrientes.** Todo lo de arriba se decidió
-> por observación visual del compuesto, que es el criterio correcto para el color
-> pero no da números. Las tres caídas sobre las resistencias, y el Vf real por
-> diferencia contra el GPIO, siguen pendientes de multímetro.
+> **Las corrientes por canal no se van a medir, y se cierra a propósito.** Todo lo
+> de arriba se decidió por observación visual del compuesto, que **es el criterio
+> correcto**: lo que importa es el brillo percibido, y el cálculo de corriente ya
+> demostró que predice el desequilibrio al revés. Con el rojo en 220 Ω el blanco
+> sale blanco y los tres canales se ven parejos, así que el número no tiene
+> consumidor — medirlo daría un dato exacto sobre una decisión ya tomada por el
+> criterio bueno. Se retira de pendientes el 8-ago-2026.
+>
+> Si alguna vez hiciera falta —otro LED, otras resistencias— la técnica está
+> escrita: **voltímetro en paralelo sobre cada resistencia e `I = V/R`, nunca
+> amperímetro en serie**, porque verde y azul tienen ~0.3 V de margen sobre su Vf
+> y el shunt saldría de ahí.
 
 ### Conexiones del display (8 cables)
 
@@ -367,7 +380,7 @@ Opciones de pad, en orden de preferencia:
 
 **Decisión cerrada:** PlatformIO con `framework = arduino`, **no** ESP-IDF puro.
 
-Razón: las siete librerías del stack (`TFT_eSPI`, `TJpg_Decoder`, `WiFiManager`, `BH1750`, `QRCode`, `ESPAsyncWebServer`, `AsyncTCP`) son del ecosistema Arduino. ESP-IDF puro obligaría a reemplazarlas por `esp_lcd` + `esp_jpeg` + provisioning propio — más limpio a largo plazo pero implica reescribir el equivalente de WiFiManager, que es justo la pieza que sostiene la regla 1.
+Razón: las seis librerías del stack (`TFT_eSPI`, `TJpg_Decoder`, `WiFiManager`, `QRCode`, `ESPAsyncWebServer`, `AsyncTCP`) son del ecosistema Arduino. ESP-IDF puro obligaría a reemplazarlas por `esp_lcd` + `esp_jpeg` + provisioning propio — más limpio a largo plazo pero implica reescribir el equivalente de WiFiManager, que es justo la pieza que sostiene la regla 1.
 
 PlatformIO además fija versiones exactas en un archivo versionado, que es lo que hace el build reproducible dentro de tres años.
 
@@ -397,7 +410,6 @@ board_build.partitions = huge_app.csv   ; sin OTA, todo el flash para la app
 lib_deps =
     bodmer/TFT_eSPI@2.5.43
     bodmer/TJpg_Decoder@1.1.0
-    claws/BH1750@1.3.0
     tzapu/WiFiManager@2.0.17
     ricmoo/QRCode@0.0.1
     ESP32Async/ESPAsyncWebServer@3.12.0
@@ -464,7 +476,7 @@ Si el resolvedor de PlatformIO no encuentra los paquetes de `ESP32Async`, usar l
     https://github.com/ESP32Async/AsyncTCP.git
 ```
 
-**Las siete versiones ya están pineadas** — las de arriba son las que resolvieron en el primer build limpio y las que están en el `platformio.ini` real. No usar `latest` en ninguna: cambia el comportamiento bajo los pies. Al actualizar cualquiera, actualizar también este bloque.
+**Las seis versiones ya están pineadas** — las de arriba son las que resolvieron en el primer build limpio y las que están en el `platformio.ini` real. Eran siete: `claws/BH1750@1.3.0` salió el 8-ago-2026 al sustituir el sensor por un TSL2561, y **no entró ninguna en su lugar** — el driver vive en `firmware/src/luz.h`, y el porqué está en la sección del sensor. No usar `latest` en ninguna: cambia el comportamiento bajo los pies. Al actualizar cualquiera, actualizar también este bloque.
 
 ### La librería `SD` de Arduino NO se usa — 2026-08-07
 
@@ -629,7 +641,7 @@ Repite copiadas a mano la plataforma pioarduino `55.03.311`, `ESPAsyncWebServer@
 | `mock` | El contrato HTTP de §4, sin SD y sin display | ninguno | las dos async, duplicadas a mano |
 | `led` | `LedRGB` contra el LED real | 25, 33, 4 | ninguna |
 | `wifi` | El provisioning de WiFiManager — pendiente #5, **etapa 1** | 25, 33, 4 (el LED) | `WiFiManager`, duplicada a mano |
-| `display` | El display y el BH1750 — pendientes **#1, #3 y #4** | 18, 23, 5, 17, 16, 19 · 21, 22 | `TFT_eSPI`, duplicada a mano |
+| `display` | El display y el sensor de luz — pendientes **#1, #3 y #4**. El #4 se reabrió al cambiar el BH1750 por el TSL2561; la tecla `L` saca además los lux con los que se calibra §7 | 18, 23, 5, 17, 16, 19 · 21, 22 | `TFT_eSPI`, duplicada a mano. El sensor NO lleva librería: `../src/luz.h` |
 
 `default_envs = mock`, así que `pio run` a secas sigue compilando solo el banco de
 red; los otros tres se piden con `-e led`, `-e wifi` y `-e display`. Cada uno lleva
@@ -979,25 +991,202 @@ pero **con 14 entradas la medición es ruidosa: las dos corridas difieren un 38 
 entre sí, y no se debe citar un valor único.** La cifra buena para extrapolar
 sigue siendo la de los 100 archivos.
 
-### BH1750
+### Sensor de luz — TSL2561 (sustituye al BH1750 el 8-ago-2026)
 
 | Parámetro | Valor |
 |---|---|
-| Interfaz | I2C |
-| Dirección | **`0x23` — medido**, con `ADDR` al aire. (`0x5C` si `ADDR` va a VCC) |
-| Rango | 1 – 65,535 lux |
-| Alimentación | 3.3 V |
-| Librería | `BH1750` de claws |
+| Módulo | Handson Technology, SKU `SSR1026` — $127 |
+| Chip | TSL2561, dos canales: Ch0 visible+infrarrojo, Ch1 solo infrarrojo |
+| Interfaz | I2C, hasta 400 kHz |
+| Dirección | **`0x39` — medido 8-ago-2026**, con el pad al aire. (`0x29` con `L`, `0x49` con `H`) |
+| Rango | 0.1 – 40,000 lux (del módulo); techo real según ganancia e integración |
+| Alimentación | **`Vin` a 5 V** — el módulo lleva LDO `662K` de 3.3 V |
+| Consumo | 0.6 mA máximo |
+| Driver | **`firmware/src/luz.h`, propio. Sin librería** — abajo está por qué |
 
-El rango cubre desde cuarto casi a oscuras hasta luz de día directa — exactamente la curva necesaria para control de brillo.
+**Por qué se sustituyó y no se repuso.** El GY-302 se estropeó en el banco el
+7-ago-2026 (diagnóstico completo más abajo, y merece la pena por la técnica). En
+vez de comprar otro BH1750 se subió de gama: el TSL2561 tiene **dos fotodiodos**
+y una fórmula que resta el infrarrojo, y eso importa aquí más de lo que parece —
+un fotodiodo solo mide **4× más counts por lux** bajo luz incandescente que bajo
+fluorescente, o sea que «100 lux» significaría cosas distintas según la lámpara
+de la sala. Con los dos canales esa dependencia se colapsa a ~1.0.
 
-> **Un voltímetro NO detecta `SDA` y `SCL` intercambiados, y esto costó un rato.** Con los dos cables cambiados el bus se ve perfecto: `VCC` a 3.2 V y las dos líneas en reposo a 3.14 y 3.18 V, porque las pull-ups de 4.7 kΩ del GY-302 están ahí igual en cualquier orden. El escaneo simplemente no encuentra nada y las tres medidas obvias salen bien.
+#### Configuración elegida: ganancia 16×, integración 101 ms
+
+No es el valor por defecto y la combinación **no es libre**. Los tres tiempos que
+ofrece el chip dan techos muy distintos, y el techo importa porque **saturar hace
+que la fórmula devuelva casi cero** — o sea que el sol por la ventana apagaría la
+pantalla:
+
+| Integración | Fondo de escala | Techo con fluorescente | Techo con incandescente |
+|---|---|---|---|
+| 402 ms | 65,535 counts | ~1,820 lux | **~455 lux** ← descartada |
+| **101 ms** | **37,177** | **~4,100 lux** | **~1,020 lux** |
+| 13.7 ms | 5,047 | ~4,120 lux | ~1,030 lux |
+
+402 ms queda fuera por eso, no por lenta: 455 lux es una sala normal junto a una
+ventana. 13.7 ms tiene el mismo techo que 101 ms pero **7.4× menos resolución**.
+Con 101 ms quedan 91 counts a 10 lux —el umbral bajo de §7— contra un offset de
+oscuridad de 0-4 counts.
+
+**Aun así se satura junto a una ventana, y el firmware tiene una rama para eso**
+que trata «saturado» como «brillante». Es la respuesta correcta y es también lo
+que hace innecesaria la autoganancia de las librerías: por encima del techo ya no
+hay nada que decidir.
+
+**La cadencia de sondeo no cambió.** `LUZ_PERIODO_MS` sigue en 200 ms: el peor
+caso de la integración, con `fosc` en su mínimo de 690 kHz, son 108 ms, o sea
+1.85× de margen. La rampa de §7 se queda en ~41 s y no hubo que rejustificarla.
+
+#### La dirección: tres candidatas, y el PDF del módulo se contradice
+
+`ADDR SEL` es un pin de **tres estados por diseño** (datasheet, Tabla 1), y en
+este módulo **no sale al header**: lo fija un puente de tres pads soldables
+marcados `H | centro | L`.
+
+| Pad | ADDR | Dirección |
+|---|---|---|
+| **al aire** (como viene) | flotante | **`0x39`** |
+| centro con `L` | GND | `0x29` |
+| centro con `H` | VDD | `0x49` |
+
+**MEDIDO el 8-ago-2026: `0x39`**, con la tecla `i` de `[env:display]`. Y es el
+**único** dispositivo del bus, o sea que el pad viene al aire de fábrica.
+
+Hubo que medirlo porque las dos mitades del PDF del módulo se contradicen: su
+texto y sus tres fotos dicen `0x39`, pero su **esquemático dibuja otra cosa** —un
+interruptor de dos estados con pull-down de 4.7 kΩ, que daría `0x29`—. Ganaron el
+texto y las fotos, que era la apuesta: **ese esquemático ya había fallado en otro
+punto verificable**, diciendo 4.7 kΩ donde la foto de la placa muestra
+resistencias marcadas «103», o sea 10 kΩ.
+
+Si algún día un módulo de recambio no contesta con el bus sano, la salida es
+**puentear el pad central con `L`**: eso ata `ADDR` a GND y fija `0x29` de forma
+determinista, sin depender de un pin flotante.
+
+#### Las líneas I2C están a 3.3 V con `Vin` a 5 V — MEDIDO 8-ago-2026
+
+**`SDA` y `SCL` dieron 3.2 V las dos**, con el módulo alimentado y fuera del bus.
+O sea que **las pull-ups cuelgan del riel post-LDO y no de `Vin`**, y el módulo se
+conecta a GPIO21 y GPIO22 directo, sin nivelador.
+
+Los 3.2 V no son «bajos»: el chip pide `VDD` entre 2.7 y 3.6 V y el ESP32 da por
+alto cualquier cosa por encima de ~2.48 V, así que la diferencia contra el 3.3
+nominal del LDO cabe entera en la tolerancia del instrumento. Cuadra además con
+lo que este mismo proyecto midió en el bus del GY-302 cuando estaba sano: 3.14 y
+3.18 V en reposo.
+
+**Que las dos lean lo mismo dice algo de más:** las dos resistencias están
+puestas y van al mismo riel. Una sola discrepante habría sido pull-up ausente o
+colgada de otro sitio.
+
+> **Por qué esta medida no se saltó, aunque la teoría ya la daba por buena.** El
+> esquemático dice que R1 y R2 van al post-LDO, y el propio chip lo respalda: su
+> máximo absoluto en las líneas digitales es **3.8 V**, con `VIH` máximo de 3.6,
+> así que un módulo con las pull-ups en 5 V destruiría su propio chip. Pero es el
+> mismo esquemático que ya falló en dos puntos verificables, y lo que estaba en
+> juego eran GPIO21 y GPIO22. **Fue el tercer punto donde podía fallar y no
+> falló** — que es exactamente lo que hace que la medida valiera los treinta
+> segundos: el resultado esperado no es el resultado sabido.
 >
-> Por eso `escanearI2C()` del banco **escanea en los dos órdenes**: primero el del BOM y, si sale vacío, con `SDA` y `SCL` cambiados. Si aparece en el segundo, lo dice y avisa de corregir **los cables, no el firmware** — el mapa del BOM es el que va a acabar soldado, y `main.cpp` tiene `Wire.begin(21, 22)`. Fue exactamente lo que pasó al conectarlo la primera vez.
->
-> El otro sospechoso cuando el bus está sano y no contesta nadie es **`ADDR` flotando a media escala**: el BH1750 pide <0.3×VCC para `0x23` y >0.7×VCC para `0x5C`, y en medio no responde a ninguna de las dos. Se ata `ADDR` a GND. No hizo falta aquí — al aire dio `0x23` — pero el banco lo sugiere si los dos órdenes salen vacíos.
+> La prueba solo discrimina **con `Vin` a 5 V**. Repetida a 3.3 V no dice nada,
+> porque entonces las dos topologías posibles dan la misma lectura.
 
-#### El módulo se estropeó en el banco, 2026-08-07 — hay que reponerlo
+#### El encapsulado decide los coeficientes, y no se puede leer del chip
+
+El datasheet trae **dos juegos** de coeficientes: uno para el encapsulado CS y
+otro para T, FN y CL. La numeración de pines del esquemático del módulo
+(1=VDD, 2=ADDR, 3=GND, 4=SCL, 5=INT, 6=SDA) **descarta CL** pero no CS.
+
+**El registro ID no sirve para esto**, contra lo que uno esperaría: solo
+distingue TSL2560 de TSL2561, no el encapsulado. La foto del módulo muestra patas
+periféricas con menisco de soldadura, lo que apunta a T — inferencia sobre un
+JPEG, no medición.
+
+`luz.h` usa el juego **T/FN/CL**, y **la duda se cierra el 8-ago-2026 sin
+resolverla**, que no es lo mismo que ignorarla:
+
+- **Que el módulo funcione NO prueba el encapsulado.** Funcionaría igual con el
+  juego equivocado, solo con el lux sesgado. Ese no es el argumento.
+- El argumento es que el sesgo es **menor que el error que ya se acepta**: ≤30 %
+  con luz incandescente y ~4 % con fluorescente, contra el **±35-40 % de
+  tolerancia de fábrica del propio chip** (datasheet, Nota 8).
+- Y en **esta** instalación es aún menor: el cociente Ch1/Ch0 medido es 0.146
+  —iluminación LED—, y en ese punto los dos juegos difieren **~5 %**.
+- Calibrar los umbrales de §7 contra la sala real absorbe los dos, y es lo que
+  hay que hacer de todas formas — tecla `L` del banco.
+
+Si alguna vez hiciera falta de verdad, se decide **con calibrador** y no con
+software: **T mide 3.80 × 2.60 mm** y **CS mide 1.75 × 1.25 mm**, o sea el doble,
+y no se confunden.
+
+#### Por qué no hay librería de sensor
+
+Se evaluaron las tres candidatas y se descartaron, y **el motivo es estrecho**:
+de lo que una librería de TSL2561 aporta, lo único no trivial es la
+**autoganancia**, y este marco no la usa. §7 colapsa la salida del chip a tres
+bandas, y con 16× y 101 ms la saturación cae **diez veces por encima** del umbral
+superior — donde la rama de saturación y la autoganancia dan la misma respuesta.
+El resto de la librería son cuatro llamadas a `Wire`.
+
+| Candidata | Coste |
+|---|---|
+| `adafruit/Adafruit TSL2561` | Arrastra Unified Sensor: mete 2 para sacar 1, y el set pineado subiría de 7 a 8 |
+| `sparkfun/SparkFun TSL2561` | Sin dependencias, pero sin tocar desde 2015 — el mismo argumento con el que se descartó Croppr.js |
+| `joba-1/Joba_Tsl2561` | Trae la autoganancia, que es lo único con valor real, pero es de un solo mantenedor en la pieza que gobierna el backlight |
+
+En su lugar, `firmware/src/luz.h`: ~40 líneas sobre `Wire`, compartido con el
+banco igual que `nombre.h` y `tarjeta.h`. **El set pineado baja de siete a seis.**
+Sigue el precedente que este proyecto ya sentó dos veces — `strstr` en `/delete`
+en vez de ArduinoJson, y el recuadro propio en vez de Cropper.js.
+
+**La condición que invalidaría la decisión, escrita por adelantado:** si el marco
+alguna vez tiene que reportar lux **de verdad** —a la pantalla, a un log, a la
+página— la librería vuelve a la mesa. Con tres bandas, no.
+
+> **Y esto cuesta flash, al revés de lo que se esperaba.** Quitar `BH1750` y
+> meter `luz.h` dejó el binario en **RAM 56,832 B y flash 1,339,447 B**, o sea
+> **−24 B de RAM pero +2,432 B de flash** contra la referencia del 8-ago
+> (56,856 y 1,337,015). El culpable está identificado con `nm`: **`powf` y su
+> `__ieee754_powf` son 1,910 B** que antes no se enlazaban, porque ninguna otra
+> parte del firmware elevaba a una potencia fraccionaria. El primer tramo de la
+> fórmula de lux lleva un `(Ch1/Ch0)^1.4`.
+>
+> Se acepta. Son 1.9 KB sobre una partición de 3 MB —el 0.06 %— y el ESP32 tiene
+> FPU, así que el coste en tiempo es despreciable. El datasheet ofrece una
+> aproximación lineal por tramos precisamente para librarse del `pow`, pero la
+> escribió para micros de 8 bits sin coma flotante; aquí solo cambiaría exactitud
+> por nada.
+
+#### Autocomprobación: la fórmula se verifica sin sensor
+
+`luzLuxOk()` corre en cada arranque, en el marco y en el banco, y usa la **tabla
+de responsividad del propio datasheet**: a 402 ms y 16×, una fuente fluorescente
+da Ch0 = 36 counts/lux y Ch1 = 4, y una incandescente da 144 y 72. Escalados a
+101 ms y a 100 lux salen `(907, 101)` y `(3629, 1814)`, y **las dos tienen que
+devolver ~100 lux pese a diferir 4× en counts** — que es exactamente el trabajo
+que hace la fórmula.
+
+Verificado en el host contra el archivo real: **99.26 y 99.77 lux**. Atrapa un
+coeficiente mal tecleado, un borde de tramo cambiado, la normalización olvidada y
+los dos canales intercambiados.
+
+Comprueba además la **histéresis** (`luzBanda()`), y no que clasifique —eso es
+trivial— sino que **retenga**: 90 lux tiene que leerse como «brillante» viniendo
+de brillante y como «tenue» viniendo de tenue. Es el mismo motivo por el que
+`LedRGB::lerp` está extraída: una histéresis mal puesta no se ve mirando la
+pantalla, solo cronometrándola.
+
+#### Lo que se conserva del BH1750 porque no depende del chip
+
+> **Un voltímetro NO detecta `SDA` y `SCL` intercambiados, y esto costó un rato.** Con los dos cables cambiados el bus se ve perfecto: `VCC` a 3.2 V y las dos líneas en reposo a 3.14 y 3.18 V, porque las pull-ups del módulo están ahí igual en cualquier orden. El escaneo simplemente no encuentra nada y las tres medidas obvias salen bien.
+>
+> Por eso `escanearI2C()` del banco **escanea en los dos órdenes**: primero el del BOM y, si sale vacío, con `SDA` y `SCL` cambiados. Si aparece en el segundo, lo dice y avisa de corregir **los cables, no el firmware** — el mapa del BOM es el que va a acabar soldado, y `main.cpp` tiene `Wire.begin(21, 22)`. Fue exactamente lo que pasó al conectar el GY-302 la primera vez.
+>
+> **Lo que SÍ cambió es el consejo de cuando no contesta nadie.** Con el BH1750 el sospechoso era `ADDR` flotando a media escala, porque ese chip exige <0.3×VCC o >0.7×VCC y en medio no responde. **En el TSL2561 flotante es un estado legítimo** —es `0x39`— así que ya no es la avería: la sugerencia pasa a ser puentear el pad con `L` para fijar `0x29` sin depender de un pin al aire.
+
+#### El GY-302 se estropeó en el banco, 2026-08-07 — historia, y una técnica que se queda
 
 Después de dar su medición y responder en `0x23` dos veces, el GY-302 dejó de aparecer en el bus y **no volvió**. Causa **indeterminada**: no se sabe si llegó tocado, si se dañó durante la sesión, o qué lo dañó. Se llegó a sospechar del barrido a 80 MHz y **esa hipótesis se retiró** — ninguna medida la sostiene, y el escaneo I2C no se capturó en la corrida de 40 MHz previa, así que ni siquiera está acotado el momento en que dejó de funcionar.
 
@@ -1015,7 +1204,9 @@ Después de dar su medición y responder en `0x23` dos veces, el GY-302 dejó de
 
 > Antes de tirarlo: si el módulo lleva un **SOT-23 de tres patas** (regulador tipo 662K o XC6206), medir su salida contra GND. Entrada con 3.25 V y salida sin ellos = regulador muerto y chip sano. Las dos con 3.25 V = es el chip.
 
-**No bloquea nada.** `0x23` ya está medido y la dirección la fija el pin `ADDR`, no la salud del chip, así que un módulo nuevo dará lo mismo. Y §7 ya exige que sin BH1750 el marco se quede a brillo fijo y nunca en negro — `main.cpp` lo implementa, y esta avería lo ejercitó en hardware sin querer.
+**No bloqueó nada, y ahí está lo interesante.** §7 ya exigía que sin sensor el marco se quede a brillo fijo y nunca en negro; `main.cpp` lo implementaba, y **esta avería ejercitó esa rama en hardware sin que nadie la provocara a propósito**. El marco siguió pintando fotos durante toda la sesión.
+
+**Lo que sí se perdió fue la medición.** `0x23` valía para el BH1750, y al sustituirlo por un TSL2561 esa constante no se transfiere: el chip nuevo tiene otras tres direcciones. El pendiente #4 se reabrió por eso — no porque la medida de entonces estuviera mal.
 
 ---
 
@@ -1026,14 +1217,14 @@ Después de dar su medición y responder en `0x23` dos veces, el GY-302 dejó de
 | 1 | ~~Tipo de pin `BL` (Caso A o B)~~ | **CERRADO 6-ago-2026. Caso B**, entrada lógica: 1.40 mA a 5 V y 0.88 mA a 3.3 V sobre 100 Ω. GPIO19 directo, sin transistor. Arriba |
 | 2 | ~~Pinout emisor/colector del PN2222A~~ | **CERRADO por irrelevancia**, mismo día: el Caso B saca al transistor del diseño. Arriba |
 | 3 | ~~Velocidad SPI máxima estable~~ | **CERRADO 7-ago-2026: 40 MHz.** Las tres dieron imagen limpia; se elige por margen, no por velocidad. Tabla completa arriba |
-| 4 | ~~Dirección I2C del BH1750~~ | **CERRADO 6-ago-2026: `0x23`**, lo que se esperaba. Escaneo de `[env:display]`, con `SDA` en 21 y `SCL` en 22 |
+| 4 | ~~Dirección I2C del sensor de luz~~ | **REABIERTO y VUELTO A CERRAR el 8-ago-2026**, al cambiar el BH1750 por el TSL2561: el `0x23` era correcto pero de otro chip. **`0x39` medido**, único dispositivo del bus, pad al aire. Mismo método que la vez anterior — tecla `i` de `[env:display]` |
 | 5 | ~~WiFiManager con arduino-esp32 ≥3.1.0~~ | **CERRADO 6-ago-2026.** No panica. Ver abajo |
 
-**Los cinco pendientes están cerrados.** Ninguno forzó un cambio de plataforma ni de circuito, y dos —el transistor del backlight y el pinout del PN2222A— desaparecieron del diseño en vez de resolverse.
+**Los cinco vuelven a estar cerrados**, tras la reapertura del #4 por el cambio de sensor. Ninguno forzó un cambio de plataforma ni de circuito, y dos —el transistor del backlight y el pinout del PN2222A— desaparecieron del diseño en vez de resolverse.
 
-Lo único que queda de esta tanda no es un pendiente sino una compra: **el BH1750 se estropeó en el banco después de dar su medición**, y hay que reponerlo. Detalle abajo, en la sección del sensor.
+**Pero el #4 volvió a abrirse el 8-ago-2026, y no por un error de la medición.** El BH1750 se estropeó en el banco después de dar su `0x23`, y en vez de reponerlo se sustituyó por un **TSL2561**. Ese chip tiene otras tres direcciones posibles (`0x29` / `0x39` / `0x49`), así que la constante medida no se transfiere y hay que volver a escanear. Detalle en la sección del sensor.
 
-**Quedan dos comprobaciones visuales pegadas al #1**, que un multímetro no puede dar y que salen gratis al arrancar `[env:display]` por primera vez: que el brillo a 3.3 V iguale al de 5 V (teclas `9` y `0`), y que con `BL` al aire el backlight arranque **apagado**, sin destello mientras GPIO19 flota. Detalle arriba.
+**Las dos comprobaciones visuales del #1 también están hechas, 8-ago-2026:** el brillo del display al 100 % con `BL` a 3.3 V es **el mismo** que a 5 V, y con `BL` desconectado el backlight queda en **0**, sin destello mientras GPIO19 flota. La primera confirma que el driver del módulo satura con los 0.88 mA que da un GPIO; la segunda convierte en observación directa lo que hasta ahora era inferencia de dos medidas de corriente.
 
 ### Pendiente #5 — CERRADO, 2026-08-06. El panic no ocurre
 

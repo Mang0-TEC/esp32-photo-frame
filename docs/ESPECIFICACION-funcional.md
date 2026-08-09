@@ -18,7 +18,7 @@ Un marco comercial de 10" cuesta $1,000–1,500 MXN y siempre dará más pulgada
 - **Sin app de nube, sin cuenta, sin suscripción.** Muchos marcos comerciales exigen registrarse en un servicio propietario.
 - Está hecho por quien lo regala.
 
-Costo hasta hoy: **$387 MXN gastados** en componentes nuevos, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y sensor de luz, más $126 del ESP32 de reposición — la unidad USB-C que había en inventario resultó defectuosa. **Los cuatro están comprados y en mano.** Lo que queda por gastar son **$42** de la reposición del BH1750, que se estropeó en el banco el 7-ago-2026 después de dar su medición, así que el total del proyecto va camino de **$429**.
+Costo del proyecto: **$514 MXN**, contra $1,000–1,500 del comercial. Son $261 de pantalla, lector SD y el primer sensor de luz; $126 del ESP32 de reposición, porque la unidad USB-C que había en inventario resultó defectuosa; y $127 del **módulo TSL2561** que sustituye al BH1750 estropeado en el banco el 7-ago-2026. **Todo está comprado y en mano: no queda nada pendiente de comprar**, por primera vez en el proyecto, y sobran $186 del presupuesto objetivo de $700.
 
 ### Restricciones de diseño derivadas del contexto
 
@@ -37,7 +37,7 @@ Como es un regalo que vivirá lejos de quien lo construyó, todas las decisiones
       │                       │
       │                       └──SPI──►  Tarjeta SD (almacén de fotos)
       │                       │
-      │                       └──I2C──►  BH1750 (sensor de luz)
+      │                       └──I2C──►  TSL2561 (sensor de luz)
       │
       └── Redimensionado y recorte ocurren AQUÍ, en el navegador
 ```
@@ -999,29 +999,129 @@ Sirve como referencia del patrón — el callback `tft_output(x, y, w, h, bitmap
 
 ## 7. Control de brillo
 
-### Automático por BH1750
+### Automático por TSL2561
 
 La lógica es la de un celular:
 
-| Condición | Brillo |
-|---|---|
-| Cuarto iluminado | 100 % |
-| Luz tenue de noche | ~20 % |
-| Oscuridad sostenida (varios minutos) | Backlight apagado |
+| Condición | Lux | Brillo |
+|---|---|---|
+| Cuarto iluminado | > 100 | 100 % |
+| Luz tenue | 10 – 100 | ~50 % |
+| Oscuridad sostenida | < 10 | **Backlight apagado** |
 
 **Esto resuelve el objetivo original sin necesitar detección de presencia:** si el cuarto está oscuro, nadie está viendo el marco.
 
-### La rampa avanza sin histéresis — pendiente
+**La banda oscura apaga el backlight del todo, y el «sostenida» sale gratis de la rampa.** Bajar de la banda media a 0 son 128 escalones de 200 ms, o sea **~26 s de oscuridad continua** antes de quedarse apagado, y cualquier luz que vuelva lo revierte a medio camino. No hace falta un temporizador aparte. El costo es que el recorrido extremo pasa de ~41 s a **~51 s**.
 
-El firmware sube o baja el backlight un paso de PWM por lectura de BH1750 (período de ~200 ms), así que el recorrido completo entre extremos tarda ~40 s — deliberadamente lento, al ritmo al que un cuarto se oscurece de verdad, no un salto brusco.
+> **Esto estuvo mal implementado hasta el 8-ago-2026, y el documento llegó a taparlo.** El código dejaba la banda oscura en 51 —un 20 %— en vez de apagar, y en una revisión posterior se «corrigió» esta tabla para que cuadrara con el código. Iba al revés: el código era el que se había quedado corto. Se restaura la fila original y se arregla la constante.
+>
+> Lo que lo destapó fue medir: **el cuarto con focos LED de noche da 137 lux**, y a brillo pleno el display molesta en esa sala — o sea que la banda oscura tenía que apagar de verdad, no atenuar.
 
-Lo que falta: **histéresis entre los umbrales de lux.** Con el valor de luz oscilando justo en el borde de un umbral (100 lux, 10 lux), el brillo objetivo puede alternar entre dos niveles lectura a lectura, y aunque la rampa de un paso amortigua el salto, no lo elimina. Marcado `TODO` en el propio código (`updateBrightness()`, `firmware/src/main.cpp`) — no bloquea el resto del firmware, se resuelve **cuando llegue el BH1750 de reposición** y se pueda ver el efecto real en vez de solo razonarlo. (El sensor original sí estuvo en placa y dio `0x23`; se estropeó después, ver más abajo.)
+#### Los umbrales de lux siguen sin calibrar, y el de arriba tiene un problema conocido
 
-### Degradación elegante
+**El 100 y el 10 son herencia del BH1750**: se eligieron describiendo «cuarto iluminado» y «luz tenue de noche», sobre la mesa. La primera medición real ya enseñó el problema — **137 lux de noche con los focos encendidos cae en la banda alta**, o sea que el umbral de 100 **no separa «de día» de «de noche con lámparas»**: mete las dos en 100 %.
 
-Si el BH1750 falla, la pantalla se queda en **brillo fijo**, no apagada. Nunca debe quedarse en negro por un sensor descompuesto.
+Queda pendiente la lectura con luz de sol para decidir. Si sale parecida a los 137, el umbral se queda y el marco vive entre «brillante» y «apagado»; si sale mucho mayor, el umbral alto sube por encima de 137 y la banda del 50 % empieza a usarse.
 
-> **Y esto dejó de ser hipotético el 7-ago-2026:** el módulo del banco se estropeó de verdad, en mitad de las pruebas, después de haber respondido correctamente. La rama de degradación se ejercitó en hardware sin que nadie la provocara a propósito — el firmware siguió pintando, que es exactamente lo que la regla 2 pide. La avería y su diagnóstico están en el BOM; el sensor hay que reponerlo, pero no bloquea nada del firmware.
+> Calibrar contra la sala real absorbe además las dos incertidumbres del sensor que no se pueden cerrar leyendo — el juego de coeficientes del encapsulado y el ±35-40 % de tolerancia de fábrica del chip. Detalle en el BOM.
+
+#### Lo medido el 8-ago-2026, y lo que cada número decide
+
+| Condición | Ch0 | Ch1 | Ch1/Ch0 | Lux |
+|---|---|---|---|---|
+| Cuarto de noche, focos LED | 1,218 | 180 | 0.148 | **126.5** |
+| El mismo, minutos antes | 1,314 | 192 | 0.146 | **137** |
+| Sensor tapado con la mano | 10 | 3 | 0.300 | **0.80** |
+| Con luz de sol | — | — | — | *pendiente* |
+
+**El umbral bajo de 10 lux queda confirmado con margen: el suelo son 0.80 lux, 12.5× por debajo.** Y como la histéresis pide 12 lux para salir de la banda oscura, entre 0.8 y 126 no hay ninguna posibilidad de oscilación.
+
+**El cociente subiendo a 0.300 al tapar es confirmación de que el canal 1 lee de verdad.** La piel deja pasar rojo e infrarrojo mucho mejor que el resto del visible, así que tapar con la mano *tiene* que empujar la proporción de IR hacia arriba. Si no se hubiera movido, habría sido señal de que Ch1 está muerto — y ese fallo, sin esta comprobación, se vería como un lux plausible pero mal compensado.
+
+**El cociente de 0.148 con la sala iluminada dice que los focos son LED, no incandescentes**, y eso decide cuál es el techo de saturación que aplica: el de **~4,100 lux**, no el de ~1,020.
+
+> **La escena varía más que el sensor, y eso es un aviso contra sobreajustar.** Dentro de una tanda de 10 muestras la dispersión es del **1 %**; entre dos tandas de la *misma* sala separadas por minutos, del **8 %** (137 contra 126). O sea que el ruido que importa no es el del chip sino el de la escena, y afinar un umbral a un número exacto no compra nada. Es el argumento para dejar la histéresis en ±20 %.
+>
+> Y la lectura de 0.80 lux es **el sensor tapado con la mano, no un cuarto a oscuras**: un cuarto con la luz apagada pero con farol de la calle o LEDs de standby puede dar 1-5 lux. Cae en la misma banda, así que la decisión no cambia, pero el 0.80 es el suelo del sensor y no el número de la sala.
+
+#### El sensor cambió el 8-ago-2026, y no es un reemplazo pin a pin
+
+El GY-302 (BH1750) se estropeó en el banco y se sustituyó por un **módulo TSL2561**. Para esta sección lo que importa es que el chip nuevo **no entrega lux**: entrega dos canales crudos —Ch0 visible+infrarrojo, Ch1 solo infrarrojo— y el lux sale de una fórmula por tramos sobre su cociente.
+
+Eso no es complicación gratuita, y es la razón de subir de gama: **un solo fotodiodo da 4× más counts por lux bajo luz incandescente que bajo fluorescente**, o sea que «100 lux» habría significado cosas distintas según la lámpara de la sala. Restar el infrarrojo colapsa esa dependencia a ~1.0.
+
+El driver es propio —`firmware/src/luz.h`, sin librería— y el porqué está en el BOM. Aquí solo importa la consecuencia: el set de librerías pineadas bajó de siete a seis.
+
+#### Saturar hace que la fórmula devuelva CASI CERO, y eso apagaría la pantalla al sol
+
+Es el modo de fallo que este chip trae de regalo y hay que decirlo aquí. Con Ch0 clavado en el fondo de escala, Ch1 sigue subiendo, el cociente se va hacia 1 y la fórmula cae en su último tramo. **Más luz daría menos lux.**
+
+Con la configuración elegida —ganancia 16×, integración 101 ms— el techo son ~4,100 lux con luz fluorescente y **~1,020 con incandescente**, o sea que se alcanza de verdad junto a una ventana. `updateBrightness()` lo ataja antes de calcular: **saturado cuenta como «brillante»**, que es la respuesta correcta, porque el techo está diez veces por encima del umbral alto.
+
+Es también lo que hace innecesaria la autoganancia de las librerías de este chip.
+
+### La rampa, y la histéresis — CERRADA 8-ago-2026
+
+El firmware sube o baja el backlight un paso de PWM por lectura (período de 200 ms), así que el recorrido entre bandas extremas tarda **~41 s** — deliberadamente lento, al ritmo al que un cuarto se oscurece de verdad, no un salto brusco.
+
+**El período no cambió al cambiar de sensor, y eso hubo que comprobarlo.** El TSL2561 integra durante 101 ms nominales, pero su oscilador tiene tolerancia: con `fosc` en el mínimo de 690 kHz el peor caso son **108 ms**, o sea 1.85× de margen bajo los 200. Si algún día alguien sube la integración a 402 ms, el sondeo devolvería la misma conversión dos veces — así que hay un `static_assert` que rompe el build en vez de degradar en silencio.
+
+**La histéresis ya está puesta**, y era el `TODO` que esperaba precisamente a tener sensor. El umbral que hay que cruzar depende de por dónde se viene: se relaja un **20 %** en el sentido que mantiene la banda actual, así que subir pide 120 lux y bajar pide 80. Sin eso, un valor oscilando justo en el borde cambia de banda en cada lectura y el brillo pasa la noche yendo y viniendo — la rampa de un paso amortigua el salto pero no lo elimina, que es lo que decía el `TODO`.
+
+> **Vive en una función pura (`luzBanda()`) y se comprueba al arrancar, y el motivo no es purismo.** Una histéresis mal puesta **no se ve mirando la pantalla**: solo cronometrándola. Es el mismo argumento por el que `LedRGB::lerp` está extraída. La autocomprobación no verifica que clasifique —eso es trivial— sino que **retenga**: 90 lux tiene que leerse como «brillante» viniendo de brillante y como «tenue» viniendo de tenue.
+
+##### Verificado en placa, 8-ago-2026, con el firmware del marco
+
+Tapando y destapando el sensor a mano, con el display encendido:
+
+```text
+[luz] 107.7 lux -> banda 1, backlight 128 (ch0=1040 ch1=156)
+[luz] 120.5 lux -> banda 2, backlight 255 (ch0=1159 ch1=171)
+[luz]  36.1 lux -> banda 1, backlight 128 (ch0=360  ch1=61)
+[luz]   7.3 lux -> banda 0, backlight 0   (ch0=76   ch1=15)
+```
+
+**Las dos primeras líneas son la histéresis haciendo su trabajo, y son la prueba que importa:** 107.7 lux está **por encima** del umbral nominal de 100 y aun así se quedó en la banda media, porque viniendo de abajo hace falta cruzar 120. Sin histéresis habría subido a 255 y vuelto a bajar en la siguiente lectura. Lo mismo por el otro lado: de la banda alta se sale por debajo de 80, no de 100.
+
+**Y de vista, que es lo que no dice el log:** el backlight llega a 0 de verdad, no de golpe, y al destapar el sensor el brillo vuelve gradualmente.
+
+> **Rampa e histéresis son mecanismos distintos y se ajustan en sitios distintos**, y conviene no confundirlos al depurar: lo **gradual** es la rampa (`LUZ_PERIODO_MS`), y lo que evita el **parpadeo** en el borde de un umbral es la histéresis (el ±20 % de `luzBanda()`). Si el fundido se siente lento se toca la primera; si el brillo oscila en un umbral, la segunda.
+
+**La traza `[luz]` solo se emite al CAMBIAR de banda**, no en cada lectura: a 200 ms de sondeo serían cinco líneas por segundo toda la noche, y los cambios de banda son unos pocos al día. Se queda en producción porque es justo lo que hay que ver si alguien reporta «la pantalla se apagó sola».
+
+### Degradación elegante — los tres caminos, verificados en placa
+
+Si el sensor falla, la pantalla se queda en **brillo fijo al 100 %**, no apagada. Nunca debe quedarse en negro por un sensor descompuesto.
+
+Probado el 8-ago-2026 sobre el firmware del marco, desconectando `SDA` a mano:
+
+| Caso | Qué imprime | Errores I2C | Brillo resultante |
+|---|---|---|---|
+| Sensor presente | `[OK] TSL2561 en 0x39` | — | automático |
+| **Ausente al arrancar** | `[WARN] TSL2561 no responde en 0x39 — brillo fijo` | **ninguno** | 100 % fijo |
+| **Se cae en caliente** | 5 errores del driver + `[luz] sensor sin responder` | 5, una sola vez | sube a 100 % y se queda |
+
+**El caso de arranque no ensucia el log en absoluto**, y es deliberado: `luzIniciar()` falla una vez, `luzOk` se queda en falso y `updateBrightness()` no vuelve a tocar el bus nunca. Los cinco errores del caso caliente son inevitables —hay que intentar leer para descubrir que el sensor ya no está— pero el pestillo los corta ahí. **Sin ese pestillo serían cinco líneas de error por segundo, indefinidamente.**
+
+#### El guard de la lectura fallida tuvo que crecer cuando la banda oscura bajó a 0
+
+Este es el fallo que introdujo apagar el backlight, y conviene tenerlo escrito porque el código «obvio» es el equivocado:
+
+```cpp
+if (!luzLeer(&ch0, &ch1)) return;      // ← INSUFICIENTE desde que la banda oscura vale 0
+```
+
+Un `return` congela el brillo **donde esté**, y desde que la banda oscura vale 0, «donde esté» puede ser apagado. Un sensor que muere con el cuarto a oscuras dejaría la pantalla en negro **para siempre**, y ni encendiendo la luz volvería. Con la banda oscura en 51 el mismo código era inofensivo — se quedaba al 20 % — así que el fallo lo creó bajarla, no escribirla mal.
+
+La corrección cuenta lecturas fallidas seguidas y, tras `LUZ_FALLOS_MAX = 5` —un segundo a 200 ms por lectura—, da el sensor por muerto y **fuerza el 100 %**. Un fallo suelto es ruido del bus y no significa nada; cinco seguidos son una avería.
+
+**Medido: los cinco fallos ocuparon 1.0 s clavado**, y la pantalla pasó de negro a brillo pleno en ese segundo. La reproducción de fotos no se interrumpió en ningún momento — es la regla 2 en el caso que la motiva.
+
+> **Recuperar exige reiniciar**, y se acepta: `luzOk` no vuelve a ponerse a cierto. Un sensor que deja de responder un segundo entero está roto, y en el marco final va soldado con UTP dentro de una carcasa cerrada, donde una reconexión espontánea no es un caso realista. Desenchufar y volver a enchufar el marco lo recupera.
+
+> **La primerísima lectura tras `luzIniciar()` puede salir 0 lux, y no es un fallo.** Los registros de canal valen `00h` al encender y la primera integración tarda 101 ms, así que una lectura inmediata devuelve `ch0=0 ch1=0` — observado en placa. Empuja un escalón hacia la banda oscura y es invisible con la rampa de un paso, pero dejaría de serlo si alguien la acelerase.
+
+> **Y esto dejó de ser hipotético el 7-ago-2026:** el módulo del banco se estropeó de verdad, en mitad de las pruebas, después de haber respondido correctamente. La rama de degradación se ejercitó en hardware sin que nadie la provocara a propósito — el firmware siguió pintando, que es exactamente lo que la regla 2 pide. La avería y su diagnóstico están en el BOM.
 
 **El backlight se maneja directamente desde GPIO19**, con PWM por LEDC a 5 kHz y 8 bits, en sentido intuitivo — duty alto es más brillo. **Sin transistor**: el pin `BL` del AR3952 resultó ser una entrada lógica de ~3.17 kΩ que pasa 0.88 mA a 3.3 V, y el módulo lleva su propio driver para la corriente del backlight (pendiente #1, cerrado). Verificado de vista que la atenuación es gradual, sin parpadeo, y que en duty 0 el backlight se apaga por completo.
 
@@ -1194,6 +1294,7 @@ Detalle y cifras en el BOM.
 | Procesador | ESP32 clásico WROOM, USB-C — **comprado y verificado en placa** (`ESP32-D0WD-V3 rev v3.1`, `PSRAM 0 B`) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
 | Pantalla | ST7796S 3.5" IPS SPI | Nextion (25 fotos precompiladas), all-in-one 5" (presupuesto) |
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
+| Driver del sensor de luz | `firmware/src/luz.h`, propio: ~40 líneas sobre `Wire` con la fórmula de dos canales del datasheet y autocomprobación al arrancar | Las tres librerías de TSL2561. De lo que aportan, lo único no trivial es la autoganancia, y §7 colapsa el sensor a tres bandas con la saturación diez veces por encima del umbral alto. Adafruit además arrastra Unified Sensor (7 → 8 pineadas), SparkFun no se toca desde 2015 |
 | Driver de la SD | `sdspi` de ESP-IDF con `SPI_IGNORE_DATA_CRC`, envuelto en un `fs::FS` (`firmware/src/tarjeta.h`) | La librería `SD` de Arduino: manda CMD59 y luego exige un OCR de un CMD58 hecho en idle, que estas tarjetas contestan «ocupada». Medido con dos tarjetas; el master de arduino-esp32 tiene el mismo código. SdFat: dependencia nueva y no es un `fs::FS`, rompería el streaming de `/list` |
 | Sistema de archivos | FAT32, cluster 32 KB **medido desde el ESP32**, no solo desde Windows (= un cluster por foto dentro de presupuesto) | NTFS (FatFs solo implementa FAT12/16/32); exFAT (`FF_FS_EXFAT=0` en el binario precompilado de arduino-esp32 3.3.11 — no es "no soportado", está deshabilitado en un binario que este proyecto no controla; habilitarlo obligaría a migrar a ESP-IDF) |
 | Carga de fotos | Servidor web local + Canvas | App, SD extraíble, USB |
@@ -1207,7 +1308,7 @@ Detalle y cifras en el BOM.
 | Sin WiFi | Toque largo levanta el AP, con timeout de 5 min | AP permanente (exposición 24/7), no tener ruta de recuperación |
 | Orientación | Vertical 320×480, nativa del panel (`setRotation(0)`), proporción nativa con barras | Horizontal 480×320, que dejaba las verticales de celular en 240×320 · rotación física reversible · rotación automática · playlists |
 | Barras negras | Calculadas en firmware | Horneadas en el JPEG |
-| Brillo | Automático por BH1750 | Sensor de presencia (PIR/ultrasónico) |
+| Brillo | Automático por TSL2561, con histéresis de ±20 % y rama de saturación | Sensor de presencia (PIR/ultrasónico); BH1750 (se estropeó, y con un solo fotodiodo «100 lux» cambia 4× según la lámpara) |
 | Control manual | Touch capacitivo invisible | Botón físico, control remoto IR |
 | Estado | LED RGB, apagado tras 30 s | Dos LEDs fijos permanentes |
 | Alimentación | USB-C a la pared | Batería LiPo |
@@ -1253,7 +1354,7 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 7. ~~**Prueba del pin `BL`.**~~ **Hecho, 6-ago-2026. Caso B: entrada lógica.** Con 100 Ω en serie, el pin pasa **1.40 mA a 5 V** y **0.88 mA a 3.3 V** —o sea 3.17 kΩ de impedancia de entrada por ajuste de dos puntos— mientras el panel enciende brillante. Esa corriente es ~70× menor que la del backlight, así que la potencia sale de `VIN` por un driver del módulo y `BL` solo lo gobierna. **`BL` va directo a GPIO19, con PWM por LEDC y sin transistor.** Cifras y método en el BOM.
 8. ~~Confirmar pinout del PN2222A (zócalo hFE).~~ **Desaparece con el punto 7:** el transistor sale del diseño del backlight, junto con sus 470 Ω de base y el 10 kΩ.
 9. ~~Afinar velocidad SPI (27 → 40 → 80 MHz).~~ **Hecho, 7-ago-2026: 40 MHz.** Los tres binarios dieron **imagen limpia**, 80 MHz incluido, así que la elección no fue de estabilidad sino de margen: repintar una foto cuesta 77 ms a 40 MHz contra 45 a 80, y eso es invisible en un marco que cambia de imagen cada varios segundos. Tabla completa en el BOM.
-10. ~~Confirmar dirección I2C del BH1750.~~ **Hecho, 6-ago-2026: `0x23`**, con `ADDR` al aire, que es lo que asumía §7. Escaneo desde `[env:display]`. De paso salió que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
+10. **Confirmar dirección I2C del sensor de luz.** Se hizo el 6-ago-2026 y dio `0x23`, con `ADDR` al aire — pero eso valía para el BH1750, y el **8-ago-2026 se sustituyó por un TSL2561**, cuyo pin `ADDR` es de tres estados y da `0x29` / `0x39` / `0x49`. La constante no se transfiere, así que hubo que volver a escanear — y **el mismo día quedó cerrado otra vez: `0x39`**, único dispositivo del bus, con el pad de dirección al aire. Mismo método y misma tecla. Lo que sí se conserva de aquella vez es el hallazgo de que un voltímetro **no** detecta `SDA` y `SCL` intercambiados —las dos líneas leen 3.3 V en reposo en cualquier orden— así que el banco escanea en los dos órdenes; detalle en el BOM.
 11. ~~**QR de uso diario al terminar el provisioning.**~~ **Hecho y verificado en placa, 8-ago-2026**, en el recorrido completo de placa virgen. El disparador es *se acaba de provisionar*, no *se conectó*, y depende de que `getWiFiIsSaved()` diga la verdad — o sea del `WiFi.mode(WIFI_STA)` de §5. De ese recorrido salió además un fallo que **solo existe en el arranque que provisiona**: `server.begin()` da `bind error: -8` porque el portal cautivo aún retiene el puerto 80, y el QR acababa apuntando a una página que no cargaba. Se corrige reiniciando tras provisionar, con bandera en NVS. Detalle en §5.
 12. ~~**Galería de lo ya cargado y `POST /delete`.**~~ **Hecho, 7-ago-2026.** Era lo único del contrato HTTP que la página no llamaba. Sin endpoints nuevos —`/list` y `/photo` bastaban— y **sin dependencias nuevas**: el cuerpo JSON se lee con `strstr`/`strchr` como en el banco, y ArduinoJson se descartó. Galería paginada de 60, multi-selección con una sola confirmación, y borrado **secuencial** porque cada `/delete` reescribe el manifiesto entero. Verificado en placa: `200`, `400` con `../manifest.txt`, `400` con un POST **sin cuerpo** —que es un fallo que el banco arrastra y aquí se cerró con guard de identidad—, `200` idempotente sobre un nombre que ya no existe, y **el contador de NVS sin retroceder**: tras borrar la `00000074`, la siguiente subida salió `00000075`. Detalle en §4.
 13. **Lector SD y coexistencia de los dos buses.** **Hecho, 7-ago-2026.** Montado
@@ -1278,7 +1379,9 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
 
     **Falta de esta pieza**: el toque corto no se ha podido probar —depende del
     pad capacitivo, que todavía no existe (§8)— y la histéresis del brillo sigue
-    marcada como `TODO`, esperando al BH1750 de reposición.
+    marcada como `TODO`, esperando al sensor de reposición. **La histéresis se
+    cerró el 8-ago-2026** al entrar el TSL2561: ±20 % sobre cada umbral, en una
+    función pura que se comprueba al arrancar (§7).
 
 15. **El marco recibe fotos por sí solo.** **Hecho, 7-ago-2026.** Las tres piezas
     que faltaban para que el regalo no dependa de una Mac, y que eran la misma

@@ -9,7 +9,14 @@
 //        respuesta manejándolo por PWM: si atenúa de verdad, es entrada lógica
 //        (Caso B) y el PN2222A no hace falta.
 //    #3  Velocidad SPI máxima estable: 27 → 40 → 80 MHz.
-//    #4  Dirección I2C del BH1750, casi seguro 0x23.
+//    #4  Dirección I2C del sensor de luz. REABIERTO el 8-ago-2026: el BH1750
+//        se sustituyó por un TSL2561 y el 0x23 ya no aplica. Ahora son tres
+//        candidatas (0x29 / 0x39 / 0x49) y se espera 0x39. Tecla 'i'.
+//
+//  Y una cosa que no es un pendiente del BOM pero solo se puede medir aquí:
+//  la tecla 'L' vuelca Ch0/Ch1 crudos y el lux calculado, que es de donde
+//  salen los umbrales reales de §7. Los 100 y 10 lux de hoy son herencia del
+//  BH1750 y nunca se validaron contra esta sala.
 //
 //  ── El barrido de SPI son TRES BINARIOS, no una tecla ─────────────────
 //
@@ -40,6 +47,7 @@
 
 #include "nombre.h"    // nombreValido(), compartida con el marco y el banco de red
 #include "tarjeta.h"   // el montaje por sdspi del IDF, y POR QUÉ no se usa TARJETA.h
+#include "luz.h"       // TSL2561, y POR QUÉ no hay librería de sensor
 
 // Mapa de GPIOs del BOM. Los del display llegan por build_flags —TFT_eSPI los
 // necesita como macros—, así que aquí solo van los que este sketch maneja.
@@ -217,12 +225,26 @@ static void cronometrar() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-//  Pendiente #4 — dirección del BH1750
+//  Pendiente #4 — dirección del sensor de luz
+//
+//  REABIERTO el 8-ago-2026: el BH1750 se sustituyó por un TSL2561 y el 0x23
+//  que cerró este pendiente ya no aplica. El chip nuevo tiene TRES direcciones
+//  y su pin ADDR es de tres estados por diseño (datasheet, Tabla 1), así que
+//  ninguna de las tres es «la mala»:
+//
+//      pad al aire (como viene el módulo) → 0x39
+//      centro puenteado a «L»             → 0x29
+//      centro puenteado a «H»             → 0x49
+//
+//  Se espera 0x39 y es SUPUESTO: el texto del PDF del módulo y sus tres fotos
+//  dicen eso, pero su esquemático dibuja un pull-down que daría 0x29 — y ese
+//  esquemático ya falló en otro punto verificable (dice 4.7k donde la foto de
+//  la placa muestra «103», o sea 10k). Por eso se escanea en vez de leer.
 // ──────────────────────────────────────────────────────────────────────
 
-// Escaneo I2C a pelo, sin la librería BH1750: la pregunta es en qué dirección
-// responde el módulo, y para eso basta el ACK. Meter la librería aquí añadiría un
-// modo de fallo («no detectado») que no distingue «no está» de «está en 0x5C».
+// Escaneo I2C a pelo, sin driver: la pregunta es en qué dirección responde el
+// módulo, y para eso basta el ACK. Meter luzIniciar() aquí añadiría un modo de
+// fallo («no responde») que no distingue «no está» de «está en otra dirección».
 static uint8_t escanearEn(uint8_t sda, uint8_t scl) {
   Wire.end();
   Wire.begin(sda, scl);
@@ -234,8 +256,10 @@ static uint8_t escanearEn(uint8_t sda, uint8_t scl) {
     if (Wire.endTransmission() == 0) {
       encontrados++;
       Serial.printf("    0x%02X responde", dir);
-      if (dir == 0x23)      Serial.print("  ← BH1750 con ADDR al aire o a GND (lo que espera el BOM)");
-      else if (dir == 0x5C) Serial.print("  ← BH1750 con ADDR a VCC: hay que cambiar la constante de main.cpp");
+      if      (dir == 0x39) Serial.print("  ← TSL2561 con el pad al aire (lo que espera LUZ_DIR)");
+      else if (dir == 0x29) Serial.print("  ← TSL2561 con el pad puenteado a «L»: cambia LUZ_DIR en ../src/luz.h");
+      else if (dir == 0x49) Serial.print("  ← TSL2561 con el pad puenteado a «H»: cambia LUZ_DIR en ../src/luz.h");
+      else if (dir == 0x23 || dir == 0x5C) Serial.print("  ← esto es un BH1750, no el TSL2561: módulo equivocado");
       Serial.println();
     }
   }
@@ -299,7 +323,7 @@ static bool recuperarI2C() {
 //
 // Es la causa más común y la única que un voltímetro NO descarta: con los dos
 // cables invertidos las dos líneas siguen leyendo 3.3 V en reposo, porque las
-// pull-ups del GY-302 están igual. Probarlo por software ahorra el viaje de
+// pull-ups del módulo están igual. Probarlo por software ahorra el viaje de
 // mover cables, medir y volver a preguntar.
 //
 // Si aparece en el orden invertido, se corrigen LOS CABLES, no el firmware: el
@@ -317,10 +341,80 @@ static void escanearI2C() {
   }
 
   escanearEn(PIN_I2C_SDA, PIN_I2C_SCL);
-  Serial.println("    nada en ninguno de los dos órdenes. Con VCC a 3.3 V y las dos");
-  Serial.println("    líneas en reposo alto, el sospechoso es ADDR flotando a media");
-  Serial.println("    escala: el BH1750 pide <0.3xVCC para 0x23 y >0.7xVCC para 0x5C,");
-  Serial.println("    y en medio no contesta a ninguna. Ata ADDR a GND.");
+  Serial.println("    nada en ninguno de los dos órdenes. En orden de sospecha:");
+  Serial.println("    1) Vin del TSL2561 va al riel de 5 V, NO al de 3.3: el módulo");
+  Serial.println("       lleva LDO propio (662K) y a 3.3 queda al borde del dropout.");
+  Serial.println("    2) Con el módulo alimentado y fuera del bus, SDA y SCL a GND");
+  Serial.println("       tienen que dar ~3.3 V. Si dan ~5 V, NO lo conectes al ESP32.");
+  Serial.println("    3) Si el bus está sano y aun así calla, puentea el pad central");
+  Serial.println("       con «L» y vuelve a escanear: eso ata ADDR a GND y fija 0x29");
+  Serial.println("       de forma determinista, sin depender de un pin flotante.");
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  Calibrar los umbrales de §7 — la tecla que da NÚMEROS en vez de opiniones
+//
+//  Los 100 y 10 lux de §7 son herencia del BH1750 y nunca se validaron contra
+//  la sala donde va a vivir el marco: se eligieron sobre la mesa, describiendo
+//  «cuarto iluminado» y «luz tenue de noche». Con el sensor en mano eso se
+//  cierra midiendo — sala de día, sala de noche y cuarto a oscuras, tres veces
+//  esta tecla — y sustituyendo los dos números.
+//
+//  Hacerlo así tiene un efecto de regalo: absorbe DOS incertidumbres que no se
+//  pueden cerrar leyendo. La del encapsulado (los coeficientes T/FN/CL contra
+//  los CS difieren ≤30 % con incandescente) y la del propio chip, cuya
+//  tolerancia de fábrica es ±35-40 % (datasheet, Nota 8). Si los umbrales
+//  salen de ESTA unidad en ESTA sala, las dos desaparecen en la calibración.
+// ──────────────────────────────────────────────────────────────────────
+
+static void medirLuz() {
+  if (!luzIniciar()) {
+    Serial.printf("[L] el TSL2561 no responde en 0x%02X. Corre 'i' para ver en cuál está.\n",
+                  LUZ_DIR);
+    return;
+  }
+  delay(150);   // la primera integración tras encender puede venir a medias
+
+  Serial.println(F("[L] 10 muestras. Deja la sala como se va a usar y no tapes el sensor."));
+  Serial.println(F("        ch0    ch1  ch1/ch0       lux"));
+
+  float lo = 1e9f, hi = -1.0f, suma = 0.0f;
+  uint8_t saturadas = 0;
+  for (uint8_t i = 0; i < 10; i++) {
+    uint16_t ch0, ch1;
+    if (!luzLeer(&ch0, &ch1)) { Serial.println(F("    lectura fallida — mira el bus con 'i'")); return; }
+    const float lux = luzLux(ch0, ch1);
+    const bool  sat = ch0 >= LUZ_FONDO_ESCALA;
+    if (sat) saturadas++;
+    Serial.printf("    %7u %6u   %6.3f  %8.1f%s\n", ch0, ch1,
+                  ch0 ? float(ch1) / float(ch0) : 0.0f, lux,
+                  sat ? "   ← SATURADO" : "");
+    if (lux < lo) lo = lux;
+    if (lux > hi) hi = lux;
+    suma += lux;
+    delay(LUZ_INTEGRACION_MS + 50);   // o se lee dos veces la misma conversión
+  }
+
+  Serial.printf("[L] lux  min %.1f   media %.1f   max %.1f\n", lo, suma / 10.0f, hi);
+
+  // El SALTO entre min y max es la mitad del entregable: es lo que dice cuánta
+  // histéresis hace falta de verdad. Con ±20 % puesto en main.cpp, una
+  // dispersión mayor que eso justo en un umbral seguiría oscilando.
+  if (lo > 0.0f)
+    Serial.printf("[L] dispersión %.0f %% de la media — la histéresis es de ±20 %%\n",
+                  100.0f * (hi - lo) / (suma / 10.0f));
+
+  if (saturadas)
+    Serial.printf("[L] %u de 10 SATURADAS: por encima del techo (~4,100 lux con luz\n"
+                  "    fluorescente, ~1,020 con incandescente). No es un fallo — el\n"
+                  "    firmware lo cuenta como «brillante», que es la respuesta correcta.\n",
+                  saturadas);
+
+  const float media = suma / 10.0f;
+  Serial.printf("[L] con los umbrales de hoy (100 y 10 lux) esta sala cae en «%s».\n",
+                media > 100.0f ? "brillante, 100 %" : media > 10.0f ? "tenue, 50 %" : "oscuro, 20 %");
+  Serial.println(F("    Si eso NO es lo que se quiere ver aquí, el número que hay que"));
+  Serial.println(F("    cambiar es el umbral de main.cpp, no la lectura."));
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1008,7 +1102,8 @@ static void menu() {
   Serial.println(F("  c  coexistencia: la SD martillea en el core 0 mientras el display"));
   Serial.println(F("     pinta en el core 1. Sostenido. 'c' otra vez para el informe"));
   Serial.println(F("  OTROS"));
-  Serial.println(F("  i  escanea I2C → dirección del BH1750 (pendiente #4)"));
+  Serial.println(F("  i  escanea I2C → dirección del TSL2561 (pendiente #4, reabierto)"));
+  Serial.println(F("  L  10 lecturas de luz: ch0/ch1 crudos y lux → calibra §7"));
   Serial.println(F("  r  niveles en reposo del bus I2C + recuperación de esclavo trabado"));
   Serial.println(F("  p  vuelca la configuración compilada   ·   ?  este menú"));
   Serial.println(F("  SPI_FREQUENCY del display se edita en platformio.ini y se"));
@@ -1042,6 +1137,7 @@ static void tecla(char c) {
     }
 
     case 'i': escanearI2C(); break;
+    case 'L': medirLuz(); break;
     case 'r': recuperarI2C(); escanearEn(PIN_I2C_SDA, PIN_I2C_SCL); break;
     case 'p': volcarConfig(); break;
 
@@ -1070,8 +1166,9 @@ void setup() {
   delay(300);
   Serial.println("\n=== BANCO DEL DISPLAY Y LA SD — no es el firmware del marco ===");
   volcarConfig();
-  Serial.printf("[autocomprobacion] nombreValido: %s\n",
-                nombreValidoOk() ? "ok" : "*** FALLA ***");
+  Serial.printf("[autocomprobacion] nombreValido: %s  lux: %s\n",
+                nombreValidoOk() ? "ok" : "*** FALLA ***",
+                luzLuxOk()       ? "ok" : "*** FALLA ***");
 
   // El backlight ANTES de tft.begin(): sin esto el primer frame del arranque se
   // ve como un flash a pantalla llena, que es justo lo que la regla 3 no quiere

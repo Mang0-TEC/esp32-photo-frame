@@ -10,12 +10,11 @@
 // Hay tres candidatas razonables (Adafruit, SparkFun, Joba) y se descartaron
 // las tres, pero NO por deporte: de lo que una librería de TSL2561 aporta, lo
 // único que no es trivial es la AUTOGANANCIA, y este marco no la usa. §7
-// colapsa la salida del chip a tres bandas (>100 lux, >10 lux, resto), y con
-// ganancia 16x y 101 ms la saturación cae en ~1,020 lux con incandescente — o
-// sea DIEZ VECES por encima del umbral superior. Cuando el sensor satura, la
-// respuesta correcta ya es «brillante»: la rama de saturación de abajo y la
-// autoganancia dan la misma respuesta en todo el rango que este marco
-// distingue. El resto de la librería son cuatro llamadas a Wire.
+// colapsa la salida del chip a tres bandas (>300 lux, >10 lux, resto), y el
+// techo MEDIDO con luz de día son ~1,740 lux — o sea casi 6x por encima del
+// umbral superior. Cuando el sensor satura, la respuesta correcta ya es
+// «brillante»: la rama de saturación y la autoganancia dan la misma respuesta
+// en todo el rango que este marco distingue. El resto son llamadas a Wire.
 //
 // El coste concreto de cada una, para no reabrirlo: Adafruit arrastra Unified
 // Sensor (el set pineado subiría de 7 a 8, metiendo 2 para sacar 1); SparkFun
@@ -73,9 +72,16 @@ static constexpr uint8_t LUZ_DATA1    = 0x0E;   // canal 1: solo infrarrojo
 //
 //   13.7 ms tiene el mismo techo que 101 ms pero 7.4x menos resolución.
 //
-//   101 ms deja el techo en ~4,100 lux (fluorescente) / ~1,020 (incandescente) y
-//   da 91 counts a 10 lux, que es el umbral bajo de §7, contra un offset de
-//   oscuridad de 0-4 counts.
+//   101 ms deja el techo calculado en ~4,100 lux (fluorescente) / ~1,020
+//   (incandescente), y MEDIDO con luz de día en ~1,740 (9-ago-2026). Da 91
+//   counts a 10 lux, que es el umbral bajo de §7, contra un offset de oscuridad
+//   de 0-4 counts.
+//
+//   OJO: con estos valores un cuarto soleado SATURA a diario — no es una
+//   esquina, es el modo normal de día. Se acepta porque por encima del techo la
+//   respuesta ya es «brillante»: la precisión hace falta abajo, donde se decide
+//   apagar el backlight, no arriba. Bajar a ganancia 1x subiría el techo 16x
+//   pero dejaría 5.7 counts a 10 lux, contra un offset de 0-4.
 static constexpr uint8_t LUZ_TIMING_VAL = 0x11;
 
 // Peor caso del tiempo de integración que fija LUZ_TIMING_VAL: 81 × 918 ciclos

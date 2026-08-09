@@ -1017,11 +1017,13 @@ La lógica es la de un celular:
 >
 > Lo que lo destapó fue medir: **el cuarto con focos LED de noche da 137 lux**, y a brillo pleno el display molesta en esa sala — o sea que la banda oscura tenía que apagar de verdad, no atenuar.
 
-#### Los umbrales de lux siguen sin calibrar, y el de arriba tiene un problema conocido
+#### Los umbrales, medidos contra la sala real
 
 **El 100 y el 10 son herencia del BH1750**: se eligieron describiendo «cuarto iluminado» y «luz tenue de noche», sobre la mesa. La primera medición real ya enseñó el problema — **137 lux de noche con los focos encendidos cae en la banda alta**, o sea que el umbral de 100 **no separa «de día» de «de noche con lámparas»**: mete las dos en 100 %.
 
-Queda pendiente la lectura con luz de sol para decidir. Si sale parecida a los 137, el umbral se queda y el marco vive entre «brillante» y «apagado»; si sale mucho mayor, el umbral alto sube por encima de 137 y la banda del 50 % empieza a usarse.
+**Resuelto el 9-ago-2026 con la lectura de día: el umbral alto sube de 100 a 300.** El cuarto de día satura el sensor —o sea ≥1,740 lux— contra los 126-137 de noche: **13× de separación**, así que no son parecidos y meterlos en la misma banda era el error.
+
+**El 300 sale del hueco entre las dos medidas, no de una tercera.** Deja 2.2× de margen sobre la noche —añadir una lámpara no cambia de banda— y 5.8× por debajo del suelo diurno. Cualquier valor entre ~200 y ~1,000 se comporta **idéntico** en las dos condiciones medidas; lo que decidiría entre ellos son las intermedias —día nublado, atardecer— y de esas no hay datos. Es una constante de una línea si algún día los hay.
 
 > Calibrar contra la sala real absorbe además las dos incertidumbres del sensor que no se pueden cerrar leyendo — el juego de coeficientes del encapsulado y el ±35-40 % de tolerancia de fábrica del chip. Detalle en el BOM.
 
@@ -1029,16 +1031,23 @@ Queda pendiente la lectura con luz de sol para decidir. Si sale parecida a los 1
 
 | Condición | Ch0 | Ch1 | Ch1/Ch0 | Lux |
 |---|---|---|---|---|
+| Sensor tapado con la mano | 10 | 3 | 0.300 | **0.80** |
 | Cuarto de noche, focos LED | 1,218 | 180 | 0.148 | **126.5** |
 | El mismo, minutos antes | 1,314 | 192 | 0.146 | **137** |
-| Sensor tapado con la mano | 10 | 3 | 0.300 | **0.80** |
-| Con luz de sol | — | — | — | *pendiente* |
+| **Cuarto de día con sol** | **37,177** ← tope | 15,750 | 0.423 | **≥1,740** |
+| **Rayo de sol directo** | **37,177** ← tope | 15,080 | 0.406 | **≥1,900** |
+
+**Las dos últimas son indistinguibles para este sensor, y eso es un resultado, no un fallo del método.** Con `ch0` clavado en el fondo de escala, meter más luz no puede subir la lectura: los 1,740 y los 1,900 no son dos medidas de iluminancia sino ruido de `ch1` sobre un `ch0` muerto. Se intentó a propósito la segunda para forzar el extremo y **no se logró forzar nada** — el sensor ya estaba ciego en la primera.
+
+> **Una predicción que falló, y conviene que quede escrita.** Se esperaba que el rayo directo subiera `ch1`, empujara el cociente por encima de 0.50 y desplomara el lux calculado a ~50 (el modo de fallo que justifica la rama de saturación). **No ocurrió**: `ch1` *bajó* un 4 % y el cociente con él, de 0.423 a 0.406. La explicación más probable es que el vidrio de la ventana filtra infrarrojo, así que el haz directo es proporcionalmente **menos** IR que la luz rebotada en las paredes.
+>
+> Consecuencia honesta: **el desplome de la fórmula no está reproducido con luz de día**. Con el sol el cociente se queda dentro del primer tramo y el resultado habría sido correcto incluso sin la rama. La rama se queda —es un `if` y garantiza el resultado sea cual sea el cociente— pero su escenario exige una fuente **rica en IR y muy intensa**, tipo halógeno, no el sol por una ventana.
 
 **El umbral bajo de 10 lux queda confirmado con margen: el suelo son 0.80 lux, 12.5× por debajo.** Y como la histéresis pide 12 lux para salir de la banda oscura, entre 0.8 y 126 no hay ninguna posibilidad de oscilación.
 
 **El cociente subiendo a 0.300 al tapar es confirmación de que el canal 1 lee de verdad.** La piel deja pasar rojo e infrarrojo mucho mejor que el resto del visible, así que tapar con la mano *tiene* que empujar la proporción de IR hacia arriba. Si no se hubiera movido, habría sido señal de que Ch1 está muerto — y ese fallo, sin esta comprobación, se vería como un lux plausible pero mal compensado.
 
-**El cociente de 0.148 con la sala iluminada dice que los focos son LED, no incandescentes**, y eso decide cuál es el techo de saturación que aplica: el de **~4,100 lux**, no el de ~1,020.
+**El cociente de 0.148 con la sala iluminada de noche dice que los focos son LED, no incandescentes.** El techo de saturación depende del espectro, así que ese dato importaba — aunque de día el que manda es otro, medido: ver abajo.
 
 > **La escena varía más que el sensor, y eso es un aviso contra sobreajustar.** Dentro de una tanda de 10 muestras la dispersión es del **1 %**; entre dos tandas de la *misma* sala separadas por minutos, del **8 %** (137 contra 126). O sea que el ruido que importa no es el del chip sino el de la escena, y afinar un umbral a un número exacto no compra nada. Es el argumento para dejar la histéresis en ±20 %.
 >
@@ -1056,7 +1065,11 @@ El driver es propio —`firmware/src/luz.h`, sin librería— y el porqué está
 
 Es el modo de fallo que este chip trae de regalo y hay que decirlo aquí. Con Ch0 clavado en el fondo de escala, Ch1 sigue subiendo, el cociente se va hacia 1 y la fórmula cae en su último tramo. **Más luz daría menos lux.**
 
-Con la configuración elegida —ganancia 16×, integración 101 ms— el techo son ~4,100 lux con luz fluorescente y **~1,020 con incandescente**, o sea que se alcanza de verdad junto a una ventana. `updateBrightness()` lo ataja antes de calcular: **saturado cuenta como «brillante»**, que es la respuesta correcta, porque el techo está diez veces por encima del umbral alto.
+Con la configuración elegida —ganancia 16×, integración 101 ms— el techo calculado son ~4,100 lux con luz fluorescente y ~1,020 con incandescente. **Medido con luz de día el 9-ago-2026: ~1,740 lux**, que es donde cae el espectro del sol tras un vidrio (cociente 0.42).
+
+**Y saturar NO es un caso extremo: es el modo normal de operación de día.** Este documento decía «se alcanza de verdad junto a una ventana», y se quedaba corto — el cuarto simplemente iluminado por el sol satura `ch0` en las 10 muestras de 10, sin apuntar a nada.
+
+`updateBrightness()` lo ataja antes de calcular: **saturado cuenta como «brillante»**, que es la respuesta correcta porque el techo está casi 6× por encima del umbral alto.
 
 Es también lo que hace innecesaria la autoganancia de las librerías de este chip.
 
@@ -1294,7 +1307,7 @@ Detalle y cifras en el BOM.
 | Procesador | ESP32 clásico WROOM, USB-C — **comprado y verificado en placa** (`ESP32-D0WD-V3 rev v3.1`, `PSRAM 0 B`) | ESP32-S3 (innecesario con decodificación por bloques), WROVER (PSRAM ocupa GPIO16/17) |
 | Pantalla | ST7796S 3.5" IPS SPI | Nextion (25 fotos precompiladas), all-in-one 5" (presupuesto) |
 | Almacenamiento | Tarjeta SD local | Google Drive / nube |
-| Driver del sensor de luz | `firmware/src/luz.h`, propio: ~40 líneas sobre `Wire` con la fórmula de dos canales del datasheet y autocomprobación al arrancar | Las tres librerías de TSL2561. De lo que aportan, lo único no trivial es la autoganancia, y §7 colapsa el sensor a tres bandas con la saturación diez veces por encima del umbral alto. Adafruit además arrastra Unified Sensor (7 → 8 pineadas), SparkFun no se toca desde 2015 |
+| Driver del sensor de luz | `firmware/src/luz.h`, propio: ~40 líneas sobre `Wire` con la fórmula de dos canales del datasheet y autocomprobación al arrancar | Las tres librerías de TSL2561. De lo que aportan, lo único no trivial es la autoganancia, y §7 colapsa el sensor a tres bandas con la saturación casi 6× por encima del umbral alto (~1,740 lux medidos contra 300). Adafruit además arrastra Unified Sensor (7 → 8 pineadas), SparkFun no se toca desde 2015 |
 | Driver de la SD | `sdspi` de ESP-IDF con `SPI_IGNORE_DATA_CRC`, envuelto en un `fs::FS` (`firmware/src/tarjeta.h`) | La librería `SD` de Arduino: manda CMD59 y luego exige un OCR de un CMD58 hecho en idle, que estas tarjetas contestan «ocupada». Medido con dos tarjetas; el master de arduino-esp32 tiene el mismo código. SdFat: dependencia nueva y no es un `fs::FS`, rompería el streaming de `/list` |
 | Sistema de archivos | FAT32, cluster 32 KB **medido desde el ESP32**, no solo desde Windows (= un cluster por foto dentro de presupuesto) | NTFS (FatFs solo implementa FAT12/16/32); exFAT (`FF_FS_EXFAT=0` en el binario precompilado de arduino-esp32 3.3.11 — no es "no soportado", está deshabilitado en un binario que este proyecto no controla; habilitarlo obligaría a migrar a ESP-IDF) |
 | Carga de fotos | Servidor web local + Canvas | App, SD extraíble, USB |

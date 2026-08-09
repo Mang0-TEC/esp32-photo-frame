@@ -215,16 +215,26 @@ static uint8_t luzNivel = 2;
 // escalones, o sea de ~41 s a ~51 s. Sigue siendo el ritmo lento a propósito.
 static constexpr uint8_t LUZ_BRILLO[3] = {0, 128, 255};   // apagado, 50 %, 100 %
 
-// Los umbrales de §7. SON HERENCIA DEL BH1750 y nunca se validaron contra la
-// sala donde va a vivir el marco: se eligieron describiendo «cuarto iluminado»
-// y «luz tenue de noche», no midiendo. La tecla 'L' del banco del display saca
-// los lux reales en las tres condiciones, y de ahí salen los números buenos.
+// Umbrales de §7, MEDIDOS contra la sala real el 9-ago-2026. El alto era 100 y
+// venía heredado del BH1750, elegido describiendo «cuarto iluminado» sobre la
+// mesa; con el sensor en mano resultó no separar el día de la noche:
 //
-// Calibrarlos ahí absorbe además las dos incertidumbres del sensor que NO se
-// pueden cerrar leyendo: el juego de coeficientes del encapsulado (≤30 % con
-// luz incandescente) y la tolerancia de fábrica del propio chip, que es de
-// ±35-40 % (datasheet, Nota 8).
-static constexpr float LUZ_UMBRAL_ALTO = 100.0f;
+//     noche con focos LED      126-137 lux
+//     cuarto de día con sol    SATURADO, ≥1,740 lux
+//     rayo de sol directo      SATURADO, indistinguible del anterior
+//
+// O sea 13x de separación, y con 100 las dos caían en la banda alta: el marco
+// habría estado al 100 % toda la noche, que es justo lo que molesta.
+//
+// 300 sale del hueco entre las dos medidas, no de una tercera: deja 2.2x de
+// margen sobre la noche —para que añadir una lámpara no cambie de banda— y
+// 5.8x por debajo del suelo diurno. Cualquier valor entre ~200 y ~1,000 se
+// comporta igual en las dos condiciones medidas; lo que decide entre ellos son
+// las intermedias (día nublado, atardecer) y de esas NO hay datos.
+//
+// El bajo se queda en 10 y ese sí está confirmado: el suelo con el sensor
+// tapado son 0.80 lux, o sea 12.5x de margen.
+static constexpr float LUZ_UMBRAL_ALTO = 300.0f;
 static constexpr float LUZ_UMBRAL_BAJO =  10.0f;
 
 // ============================================================================

@@ -1023,6 +1023,8 @@ pantalla:
 |---|---|---|---|
 | 402 ms | 65,535 counts | ~1,820 lux | **~455 lux** ← descartada |
 | **101 ms** | **37,177** | **~4,100 lux** | **~1,020 lux** |
+
+**Medido con luz de día el 9-ago-2026: el techo real son ~1,740 lux**, que es donde cae el espectro del sol tras un vidrio (cociente Ch1/Ch0 = 0.42, entre el fluorescente y el incandescente de la tabla). **Y se alcanza a diario:** el cuarto simplemente iluminado por el sol satura `ch0` en las 10 muestras de 10, sin apuntar a nada. Saturar no es un caso extremo con esta configuración — es el modo normal de operación de día, y la rama de saturación del firmware es lo que lo convierte en «brillante» en vez de en un lux sin sentido.
 | 13.7 ms | 5,047 | ~4,120 lux | ~1,030 lux |
 
 402 ms queda fuera por eso, no por lenta: 455 lux es una sala normal junto a una
@@ -1126,7 +1128,7 @@ y no se confunden.
 Se evaluaron las tres candidatas y se descartaron, y **el motivo es estrecho**:
 de lo que una librería de TSL2561 aporta, lo único no trivial es la
 **autoganancia**, y este marco no la usa. §7 colapsa la salida del chip a tres
-bandas, y con 16× y 101 ms la saturación cae **diez veces por encima** del umbral
+bandas, y con 16× y 101 ms la saturación cae **casi seis veces por encima** del umbral
 superior — donde la rama de saturación y la autoganancia dan la misma respuesta.
 El resto de la librería son cuatro llamadas a `Wire`.
 

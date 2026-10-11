@@ -1025,6 +1025,13 @@ La lógica es la de un celular:
 
 **El 300 sale del hueco entre las dos medidas, no de una tercera.** Deja 2.2× de margen sobre la noche —añadir una lámpara no cambia de banda— y 5.8× por debajo del suelo diurno. Cualquier valor entre ~200 y ~1,000 se comporta **idéntico** en las dos condiciones medidas; lo que decidiría entre ellos son las intermedias —día nublado, atardecer— y de esas no hay datos. Es una constante de una línea si algún día los hay.
 
+> **Estos umbrales se midieron con el sensor al aire, y en la carcasa va detrás de un agujero.**
+>
+> - Es un agujero de Ø2 mm en el canto superior, con abocinado de 45° en una pared adelgazada a 1 mm, mirando al techo como cuando se midió.
+> - La atenuación estimada es de **≈ 2×**, todavía sin medir.
+> - El margen está en el día: los umbrales aguantan sin cambios cualquier atenuación **menor de 5.8×**, porque por debajo de eso el día saturado (≥ 1,740 lux) sigue cayendo arriba de 300. La noche (126–137 lux) tendría margen hasta unas 10×.
+> - Se comprueba con la probeta de `carcasa/`, o con la carcasa cerrada repitiendo la lectura de noche.
+
 > Calibrar contra la sala real absorbe además las dos incertidumbres del sensor que no se pueden cerrar leyendo — el juego de coeficientes del encapsulado y el ±35-40 % de tolerancia de fábrica del chip. Detalle en el BOM.
 
 #### Lo medido el 8-ago-2026, y lo que cada número decide
@@ -1154,7 +1161,7 @@ La corrección cuenta lecturas fallidas seguidas y, tras `LUZ_FALLOS_MAX = 5` �
 
 ### Touch capacitivo nativo del ESP32
 
-Pad conductor pegado **por dentro** de la pared de la carcasa. Funciona a través de 1.5-2 mm de PLA.
+Pad conductor pegado **por dentro** de la pared de la carcasa, en el canto superior. Funciona a través de 1.5-2 mm de plástico; la carcasa final es de **PETG negro**, con la pared adelgazada a 1.5 mm en la zona del pad.
 
 **Sin sensor visible. Sin botón. $0 de costo. Un GPIO.**
 
@@ -1172,7 +1179,7 @@ Para un objeto que debe sentirse a producto terminado, esto supera a cualquier b
 
 El firmware trae hoy un umbral fijo (`TOUCH_THRESHOLD = 40` en `firmware/src/main.cpp`), marcado en el propio código como valor inventado, sin debounce.
 
-La calibración real no es una constante: es tomar la media de N lecturas de `touchRead()` al arrancar y multiplicarla por ~0.6 para fijar el umbral, más exigir 2-3 lecturas consecutivas de flanco antes de aceptar un toque como real (evita falsos positivos de una sola lectura ruidosa). El valor crudo de reposo depende del pad elegido, del grosor real de PLA entre el pad y el dedo, de la humedad y de la temperatura — es const específica de esta unidad física, no una constante de diseño.
+La calibración real no es una constante: es tomar la media de N lecturas de `touchRead()` al arrancar y multiplicarla por ~0.6 para fijar el umbral, más exigir 2-3 lecturas consecutivas de flanco antes de aceptar un toque como real (evita falsos positivos de una sola lectura ruidosa). El valor crudo de reposo depende del pad elegido, del grosor real de PETG entre el pad y el dedo, de la humedad y de la temperatura — es const específica de esta unidad física, no una constante de diseño.
 
 **No se fija hoy porque el pad conductor todavía no existe** (ver la sección de touch capacitivo del BOM). Cualquier número que se escriba antes de tener el pad soldado sería tan inventado como el `40` actual.
 
@@ -1268,7 +1275,13 @@ Era el **último código que corre antes del punto en el que el issue #1797 repo
 
 ### Los tres canales no dan el mismo brillo al mismo duty
 
-Resistencias de valor alto (220 Ω / 470 Ω) para que queden tenues, y montaje en cara trasera o inferior.
+Resistencias de valor alto (220 Ω / 470 Ω) para que queden tenues.
+
+> **El montaje cambió al diseñar la carcasa (oct-2026): el LED mira al frente**, centrado en una barbilla bajo la pantalla y detrás de un agujero de Ø3 mm. Antes decía «cara trasera o inferior».
+>
+> - Mirando al frente se ve durante el armado y en los 30 s de arranque, y se apaga igual que antes, así que la regla 3 no cambia.
+> - Es un agujero y no una membrana porque el PETG negro no deja pasar la luz.
+> - Con el LED de frente puede hacer falta bajar el brillo con `escala[3]`, que ya existe para eso.
 
 A igual duty el brillo **no** es igual: las resistencias son distintas por diseño y
 los voltajes directos también. Lo que no se deduce del cálculo es hacia dónde
@@ -1325,6 +1338,7 @@ Detalle y cifras en el BOM.
 | Control manual | Touch capacitivo invisible | Botón físico, control remoto IR |
 | Estado | LED RGB, apagado tras 30 s | Dos LEDs fijos permanentes |
 | Alimentación | USB-C a la pared | Batería LiPo |
+| Carcasa | PETG negro impreso sin soporte: carcasa frontal + tapa trasera + base cuna a 15° con llave asimétrica (no deja ponerlo de cabeza). Cierre con gancho arriba y 2 M3 roscados directo. Display sujeto por el PCB, nunca por el vidrio. Detalle en `carcasa/README.md` | PLA (se ablanda antes en un objeto cerrado 24/7), insertos termofijos (no hay en inventario), pata trasera (vuelca a 15°), cualquier soporte que permita girar el marco (§6), membranas en lugar de agujeros (el PETG negro no deja pasar la luz) |
 | Toolchain | PlatformIO + framework Arduino | ESP-IDF puro (obligaría a reescribir WiFiManager) |
 | Plataforma PIO | pioarduino (arduino-esp32 3.x, activa) | `platformio/platform-espressif32` oficial, estancada en 2.x |
 | Servidor web | `ESP32Async/ESPAsyncWebServer` | `me-no-dev/…`, archivado ene-2025 |
@@ -1490,4 +1504,4 @@ molesta, es que la galería no lance el siguiente `/delete` hasta que el anterio
 conteste, que es la disciplina de concurrencia 1 que §4 ya exige. Queda anotado
 antes que construido: con 26 borrados no se perdió ninguno.
 
-16. Integración y modelado de la carcasa.
+16. **Integración y modelado de la carcasa — en curso.** El prototipo v1 quedó modelado en Fusion (documento «Marco Ensamble») y exportado a `carcasa/` el 9-oct-2026, con todas las cotas como parámetros. Sigue imprimir la probeta de ajustes y el bisel recortado, sustituir los valores por defecto por medidas de calibrador, y luego la integración: soldar el UTP, cerrar, y recalibrar el touch (§8) y comprobar la atenuación del sensor (§7) con la carcasa puesta.

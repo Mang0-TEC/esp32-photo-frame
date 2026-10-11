@@ -51,7 +51,7 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, y **no hace falta una tercera**: el backlight resultó Caso B y va directo a GPIO19, sin transistor y sin resistencia de base. Ver la nota de corriente por canal, abajo |
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
-| 15 | Filamento PLA | Carcasa y bisel |
+| 15 | Filamento **PETG negro** | Carcasa frontal, tapa trasera y base. **Sustituye al PLA** (decidido al diseñar la carcasa, oct-2026): aguanta mejor el calor del backlight y del ESP32 en un objeto cerrado y prendido 24/7. ~70 g el juego completo. Detalle en [`carcasa/README.md`](../carcasa/README.md) |
 | 17 | Módulo **TSL2561** (Handson Technology, SKU `SSR1026`) — $127 ya pagados | **Sustituye al GY-302/BH1750**, que se estropeó en el banco. `Vin` va al riel de **5 V**, no a 3.3: lleva LDO propio (`662K`). Cinco pines, de los que se usan cuatro — `INT` se deja al aire. Dirección I2C **`0x39`, medida en placa**. Sección propia más abajo |
 | 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`). **Los `.ini` ya no fijan el puerto**: se quitaron `upload_port` y `monitor_port` de los cinco envs para que PlatformIO autodetecte, porque el sufijo del tty es el location ID del USB y cambia al mover el cable de puerto. Detalle del mecanismo en `CLAUDE.md`. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
@@ -70,7 +70,7 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 | 17 | Termofit surtido | — | Aislar uniones soldadas |
 | 18 | Soldadura + flux | — | Header y cableado |
 | 19 | Silicón caliente | — | Alivio de tensión del UTP |
-| 20 | Insertos roscados M3 o tornillos autorroscantes | 4-6 | Cierre de la carcasa |
+| 20 | Tornillos M3×8 (Allen o avellanado) | 2 | Cierre de la carcasa. **Sin insertos termofijos** (no hay en inventario): roscan directo en dos postes de PETG, y la tapa además engancha un labio arriba. El diámetro del agujero se fija con la probeta de ajustes (2.5–2.8 mm) |
 
 ---
 
@@ -91,6 +91,9 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 | Jumpers Dupont | UTP soldado ocupa menos espacio interno |
 | Google Drive como backend | OAuth2 se rompe solo con el tiempo; ata el regalo a una cuenta ajena |
 | Switch de orientación / acelerómetro | Se decidió orientación nativa con barras. Reevaluar tras pruebas |
+| Filamento PLA | Sustituido por PETG: el marco es un objeto cerrado y prendido 24/7, y el PLA se ablanda a temperatura más baja |
+| Insertos roscados termofijos M3 | No hay en inventario. Los M3 roscan directo en postes de PETG, y solo hacen falta 2 |
+| Pata trasera para sobremesa | Recargado hacia atrás, el marco se apoya en su canto trasero, y con el display al frente el centro de masa queda delante: vuelca a 15°. Se usa una base cuna |
 
 ---
 
@@ -356,7 +359,9 @@ Para el marco es el reparto correcto — lo que no puede tartamudear es la image
 
 ### Touch capacitivo
 
-El ESP32 tiene 10 pines de touch nativo (T0-T9). Un pad conductor pegado **por dentro** de la pared de la carcasa funciona a través de 1.5-2 mm de PLA. Sin sensor visible, sin botón, $0 de costo.
+El ESP32 tiene 10 pines de touch nativo (T0-T9). Un pad conductor pegado **por dentro** de la pared de la carcasa funciona a través de 1.5-2 mm de plástico. Sin sensor visible, sin botón, $0 de costo.
+
+> **En la carcasa real el pad va en el canto superior**, en una bolsa de 25 × 18 × 0.5 mm que deja **1.5 mm de PETG negro** entre el pad y el dedo. La bolsa admite las opciones 1 a 3 de abajo. El PETG tiene una permitividad parecida a la del PLA, pero la sensibilidad se revalida con el pad montado: es justo la calibración que §8 de la especificación deja pendiente.
 
 Opciones de pad, en orden de preferencia:
 
@@ -849,6 +854,8 @@ Detalle de los endpoints y sus códigos de respuesta en §4 de la especificació
 | Pines | 9, **sin soldar** |
 
 > **Para el diseño de la carcasa:** montado vertical, el área activa mide **50 mm de ancho × 74.5 mm de alto**. El PCB sobresale ~20 mm respecto al área visible, y de forma asimétrica, sobre el eje vertical. Ahí es donde el bisel tiene que trabajar.
+>
+> **Medido sobre la carcasa v1 impresa, 9-oct-2026:** el vidrio queda a **5 mm** del borde del PCB **arriba y abajo**, y a **2 mm** a los lados. La tira de arriba lleva los **pines**; el borde negro del vidrio es más grueso **abajo** (su barbilla). O sea que la asimetría está en el vidrio, no en el PCB, y la v1 —que suponía todo el sobrante abajo— dejaba la ventana 4.6 mm alta. Corregido en la v2. Sigue sin medir el borde negro del vidrio arriba; se supone igual al lateral (~2.6 mm).
 
 > **Relación de aspecto:** montado vertical, 320×480 es exactamente **2:3**. La lógica se invierte respecto del montaje horizontal que se contemplaba antes: ahora las **verticales de celular (3:4) casi llenan la pantalla** —salen en 320×427, con 11 % del alto en negro—, y son las **horizontales las que quedan a la mitad**: una 4:3 sale en 320×240, con 50 % del alto en negro. Una vertical 2:3 de réflex encaja con recorte cero; una horizontal 3:2 de réflex es ahora el peor caso, con 56 %. Justificación completa en §6 de la especificación funcional.
 

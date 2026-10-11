@@ -21,10 +21,10 @@ Este proyecto se justifica por lo que el producto comercial **no** puede hacer:
   comerciales.
 - Está hecho por quien lo regala.
 
-Costo en componentes nuevos: **$387 MXN gastados** — $261 de pantalla, lector SD y
-sensor de luz, más $126 del ESP32 de reposición. Quedan **$42** por gastar en un
-BH1750 nuevo: el original se estropeó en el banco después de dar su medición, así
-que el total va camino de **$429**.
+Costo en componentes nuevos: **$514 MXN, todo comprado y en mano** — $261 de
+pantalla, lector SD y el primer sensor de luz, $126 del ESP32 de reposición y $127
+del módulo TSL2561 que sustituyó al BH1750 estropeado en el banco. Sobran $186 del
+presupuesto objetivo de $700.
 
 ---
 
@@ -49,7 +49,7 @@ de diseño se filtra por esto:
       │                       │
       │                       └──SPI──►  Tarjeta SD (almacén de fotos)
       │                       │
-      │                       └──I2C──►  BH1750 (sensor de luz)
+      │                       └──I2C──►  TSL2561 (sensor de luz)
       │
       └── Redimensionado y recorte ocurren AQUÍ, en el navegador
 ```
@@ -72,10 +72,11 @@ Desde la perspectiva de quien lo usa: eligió una foto y funcionó.
 | Procesador | ESP32 DevKit V1 (WROOM, USB-C) | No WROVER: usa GPIO16/17 para PSRAM |
 | Pantalla | ST7796S 3.5" IPS SPI, 320×480 | Bus VSPI |
 | Almacenamiento | Lector SD H95 + microSD 8 GB | Bus HSPI **separado**, obligatorio. Driver `sdspi` del IDF, no la librería `SD` |
-| Sensor de luz | BH1750 (GY-302) por I2C | Brillo automático |
-| Indicador | LED RGB cátodo común | Se apaga tras 30 s |
-| Control | Touch capacitivo nativo (T9) | Pad interno a la carcasa, invisible |
+| Sensor de luz | TSL2561 (Handson `SSR1026`) por I2C, `0x39` | Brillo automático. Driver propio en `firmware/src/luz.h`, sin librería |
+| Indicador | LED RGB cátodo común | Mira al frente desde la barbilla; se apaga tras 30 s |
+| Control | Touch capacitivo nativo (T9) | Pad interno al canto superior, invisible |
 | Alimentación | USB-C a la pared | Sin batería |
+| Carcasa | PETG negro impreso: carcasa frontal, tapa trasera y base cuna a 15° | Modelo paramétrico en Fusion; ver [`carcasa/README.md`](carcasa/README.md) |
 
 Mapa completo de GPIOs, justificación de cada pin y notas de armado en
 [`docs/BOM-marco-fotos-esp32.md`](docs/BOM-marco-fotos-esp32.md).
@@ -111,6 +112,7 @@ pio device monitor       # 115200
 
 ```
 ├── docs/            Decisiones de hardware y de diseño funcional
+├── carcasa/         STL/3MF imprimibles y notas de la carcasa (PETG)
 ├── web/             Página de subida: redimensionado, recorte y red
 │   └── test/        Arnés de regresión sobre Chrome sin cabeza
 └── firmware/        Proyecto PlatformIO del marco
@@ -133,9 +135,9 @@ de verdad. No es la base del firmware final, y duplica a mano tres versiones de
 | Toolchain | Verificado, build limpio y reproducible |
 | Página de subida | **Completa** — preparación, recorte y subida |
 | Banco de red | Contrato HTTP corriendo sobre un ESP32 real |
-| Componentes | **$387 gastados y en mano** — pantalla, lector SD, sensor y el ESP32 definitivo. Faltan $42 del BH1750 de reposición |
-| Firmware del marco | **Muestra fotos y las recibe.** Manifiesto con reconstrucción, decodificación por bloques, `/upload`, página en PROGMEM y los dos QR. Falta probarlo desde el teléfono |
-| Carcasa | Sin empezar |
+| Componentes | **$514 gastados, todo en mano** — pantalla, lector SD, TSL2561 y el ESP32 definitivo. No queda nada por comprar |
+| Firmware del marco | **Muestra fotos y las recibe.** Manifiesto con reconstrucción, decodificación por bloques, `/upload`, página en PROGMEM, los dos QR y brillo automático por TSL2561. Falta probarlo desde el teléfono |
+| Carcasa | **Prototipo v1 modelado y exportado** (Fusion, documento «Marco Ensamble»; archivos en `carcasa/`). Falta la primera impresión de prueba y sustituir por medidas de calibrador los valores por defecto |
 
 ### Lo que ya funciona
 
@@ -169,12 +171,16 @@ node web/test/correr.js
 - **Corre:** provisioning con WiFiManager (`autoConnect()`, **verificado en placa
   el 6-ago-2026** de extremo a extremo, con el portal en español), máquina de
   estados del LED, gesto corto/largo del touch capacitivo, brillo automático por
-  BH1750, y las rutas `/list` y `/photo` del servidor.
-- **Cuerpo vacío, con `TODO`:** `showNextPhoto()`, `drawSetupQR()`,
-  `drawUsageQR()` — sin decodificación JPEG ni generación de QR todavía, aunque
-  `TFT_eSPI`, `TJpg_Decoder` y `QRCode` ya están enlazados.
+  TSL2561 con histéresis (umbrales 10/300 lux medidos contra la sala), y
+  `showNextPhoto()` con manifiesto y decodificación por bloques.
+- **Los dos QR:** el de setup (`WIFI:`, constante) y el de uso diario con la IP
+  regenerada al vuelo, que sale solo tras provisionar — **verificado en placa el
+  8-ago-2026** en el recorrido de placa virgen.
 - **El contrato HTTP completo:** `/`, `/list`, `/photo`, `/upload` y `/delete`. Ya
   no queda ninguna ruta respondiendo fijo.
+- **Queda pendiente:** levantar el AP con timeout de 5 min en el toque largo sin
+  WiFi (hoy pinta el QR de setup sin levantarlo; `TODO` en `main.cpp`), y calibrar
+  el umbral del touch, que sigue en un `40` inventado hasta que exista el pad.
 
 ### Lo que falta
 
@@ -200,7 +206,7 @@ node web/test/correr.js
    `getWiFiIsSaved()` devuelve «sí» sobre una placa sin credenciales si se
    pregunta antes de `WiFi.mode(WIFI_STA)` — un arranque virgen se habría quedado
    sin QR de setup, que es la regla 1. Corregido.
-2. ~~Pin `BL`, pinout del PN2222A, velocidad SPI y dirección I2C del BH1750.~~
+2. ~~Pin `BL`, pinout del PN2222A, velocidad SPI y dirección I2C del sensor.~~
    **Los cinco pendientes cerrados**, y ninguno forzó un cambio de plataforma ni
    de circuito:
    - **`BL` es entrada lógica** (Caso B): 1.40 mA a 5 V sobre 100 Ω, o sea ~70×
@@ -209,19 +215,27 @@ node web/test/correr.js
      importar.
    - **SPI a 40 MHz.** Las tres frecuencias dieron imagen limpia, 80 MHz
      incluido; se elige por margen, no por estabilidad.
-   - **BH1750 en `0x23`**, con `ADDR` al aire. El módulo se estropeó después de
-     dar la medición; hay que reponerlo, pero la dirección la fija el pin.
+   - **Sensor en `0x39`.** El BH1750 dio `0x23` y se estropeó después; el
+     8-ago-2026 se sustituyó por un **TSL2561**, que se volvió a escanear: `0x39`,
+     con el pad de dirección al aire.
    - **WiFiManager no panica** con arduino-esp32 3.3.11. Lo que sí salió roto fue
      `getWiFiIsSaved()`, arriba.
-3. Firmware del marco: manifiesto con reconstrucción, decodificación por bloques,
-   brillo por BH1750, toque capacitivo y QR — **incluido el QR de uso diario
-   saliendo solo al terminar el provisioning**, porque el toque largo que lo
-   muestra hoy es un gesto que nadie va a explicarle a quien reciba el marco.
+3. ~~Firmware del marco: manifiesto con reconstrucción, decodificación por bloques,
+   brillo por sensor de luz, toque capacitivo y QR.~~ **Hecho, 7–9-ago-2026**,
+   incluido el QR de uso diario saliendo solo al terminar el provisioning —
+   verificado en placa—, porque el toque largo es un gesto que nadie va a
+   explicarle a quien reciba el marco. Quedan el AP con timeout del toque largo sin
+   WiFi y la calibración del touch, que espera al pad.
 4. ~~**Galería de lo ya cargado y `POST /delete`**~~ — **hecha, 7-ago-2026.**
    Muestra todas las fotos de la tarjeta, paginadas de 60 en 60, con
    multi-selección y una sola confirmación. El objetivo es curación, no espacio:
    caben ~121,000 fotos. Sin endpoints ni dependencias nuevas.
-5. Integración y modelado de la carcasa.
+5. **Carcasa — en curso.** Prototipo v1 modelado en Fusion y exportado a
+   `carcasa/` (9-oct-2026): PETG negro, sin soporte, cierre con gancho + 2 M3
+   roscados directo, base cuna a 15°. Sigue imprimir la probeta de ajustes y el
+   bisel recortado, medir con calibrador, y después la integración: soldar el UTP
+   y recalibrar touch y sensor con la carcasa cerrada. Plan en
+   [`carcasa/README.md`](carcasa/README.md).
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no
 solo qué se eligió, sino **qué se descartó y por qué** — que suele ser la parte

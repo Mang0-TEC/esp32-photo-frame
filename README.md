@@ -178,9 +178,15 @@ node web/test/correr.js
   8-ago-2026** en el recorrido de placa virgen.
 - **El contrato HTTP completo:** `/`, `/list`, `/photo`, `/upload` y `/delete`. Ya
   no queda ninguna ruta respondiendo fijo.
-- **Queda pendiente:** levantar el AP con timeout de 5 min en el toque largo sin
-  WiFi (hoy pinta el QR de setup sin levantarlo; `TODO` en `main.cpp`), y calibrar
-  el umbral del touch, que sigue en un `40` inventado hasta que exista el pad.
+- **El touch y el AP de recuperación** (10-oct-2026): la lógica vive en
+  `firmware/src/toque.h`, compartida con el banco. La base persigue el reposo en
+  vez de calibrarse al arrancar, con debounce de 3 lecturas, salida para el pad
+  atascado y siete autocomprobaciones sin hardware. El toque largo sin WiFi levanta
+  `Marco-Fotos` con sus dos relojes de 5 min, y un toque con la pantalla apagada la
+  despierta.
+- **Queda pendiente:** fijar `TOQUE_DELTA`, hoy provisional en 15, con la tecla `t`
+  del banco y el pad real a través del PETG. El mismo número decide el grosor de
+  pared de la carcasa en la zona del pad.
 
 ### Lo que falta
 
@@ -224,17 +230,19 @@ node web/test/correr.js
    brillo por sensor de luz, toque capacitivo y QR.~~ **Hecho, 7–9-ago-2026**,
    incluido el QR de uso diario saliendo solo al terminar el provisioning —
    verificado en placa—, porque el toque largo es un gesto que nadie va a
-   explicarle a quien reciba el marco. Quedan el AP con timeout del toque largo sin
-   WiFi y la calibración del touch, que espera al pad.
+   explicarle a quien reciba el marco. El AP con timeout del toque largo sin WiFi y
+   la base del touch que persigue el reposo quedaron hechos el 10-oct-2026; falta
+   fijar `TOQUE_DELTA` con el pad real.
 4. ~~**Galería de lo ya cargado y `POST /delete`**~~ — **hecha, 7-ago-2026.**
    Muestra todas las fotos de la tarjeta, paginadas de 60 en 60, con
    multi-selección y una sola confirmación. El objetivo es curación, no espacio:
    caben ~121,000 fotos. Sin endpoints ni dependencias nuevas.
-5. **Carcasa — en curso.** Prototipo v1 modelado en Fusion y exportado a
-   `carcasa/` (9-oct-2026): PETG negro, sin soporte, cierre con gancho + 2 M3
-   roscados directo, base cuna a 15°. Sigue imprimir la probeta de ajustes y el
-   bisel recortado, medir con calibrador, y después la integración: soldar el UTP
-   y recalibrar touch y sensor con la carcasa cerrada. Plan en
+5. **Carcasa — en curso.** Prototipo v3 modelado en Fusion con los modelos CAD de
+   los componentes y exportado a `carcasa/` (10-oct-2026): PETG negro, sin
+   soporte, cierre con gancho + 2 M3 roscados directo, base cuna a 15°. Sigue el
+   test fit de la v3. En la v4, alejar el pad del PCB del display y fijar el grosor
+   de pared con la tecla `t`. Después la integración: soldar el UTP, fijar
+   `TOQUE_DELTA` y comprobar el sensor con la carcasa cerrada. Plan en
    [`carcasa/README.md`](carcasa/README.md).
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no

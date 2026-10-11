@@ -774,6 +774,31 @@ Mismo gesto, sin nada que aprender, y **sin un AP encendido permanentemente** �
 - Si nadie se conecta en 5 minutos, baja y vuelve a mostrar fotos.
 - Si hay alguien conectado, se mantiene, y el reloj se reinicia con cada petición. Así una cola de 30 fotos no se corta a la mitad.
 
+#### Implementado, y tres cosas que no se deducen de lo de arriba
+
+**El segundo reloj mira `softAPgetStationNum()`, no las peticiones HTTP.** Es
+estrictamente **más generoso** —un cliente asociado pero quieto también mantiene
+el AP— y no obliga a instrumentar los cinco handlers. La contrapartida es que un
+teléfono que se quede asociado indefinidamente deja el AP arriba; se acepta,
+porque es literalmente lo que esta sección pide.
+
+**No hace falta `DNSServer` ni portal cautivo, y por eso la función cabe en cinco
+líneas.** `server.begin()` ya corre **incondicionalmente** en `setup()`, con WiFi
+o sin él, así que el `AsyncWebServer` escucha en `0.0.0.0:80` y sirve sobre el AP
+sin nada que rearrancar. El QR lleva la URL directa.
+
+**Se levanta en `WIFI_AP_STA`, no en `WIFI_AP`.** El STA se queda intentando, así
+que si el módem solo estaba apagado un rato el marco reconecta solo, sin que
+nadie repita el gesto.
+
+**Y al asociarse alguien, el QR cambia — hacen falta los dos.** El de setup sirve
+para *entrar* a la red; en cuanto alguien está dentro la pregunta es otra: **a
+qué dirección ir**. Sin ese segundo QR, quien escanea se queda dentro del AP sin
+saber a dónde, y teclear `192.168.4.1` no se le ocurre a nadie que no lo sepa ya.
+Es el mismo argumento por el que el QR de uso diario sale solo al terminar el
+provisioning. `drawUsageQR()` toma la IP del AP en vez de la del STA cuando el AP
+está arriba: con la red caída, `localIP()` apuntaría a algo que ya no responde.
+
 **Decisión consciente, no olvido:** nadie le va a explicar a la persona destinataria que ese gesto existe, y no hace falta. El marco sigue mostrando fotos, que es el 99 % del uso. La ruta de recuperación existe para quien la busque — típicamente quien lo regaló, guiando por teléfono.
 
 ### Códigos QR en pantalla
@@ -1017,6 +1042,13 @@ La lógica es la de un celular:
 >
 > Lo que lo destapó fue medir: **el cuarto con focos LED de noche da 137 lux**, y a brillo pleno el display molesta en esa sala — o sea que la banda oscura tenía que apagar de verdad, no atenuar.
 
+**Apagar del todo dejó un hueco, y lo cerró el touch.** Con el backlight en 0,
+tocar el marco a oscuras cambiaba de foto sobre una pantalla negra: el gesto
+funcionaba y no se veía nada. Ahora un toque lo sube al 100 % con el dedo todavía
+puesto, y **es esta misma rampa la que lo vuelve a apagar** en ~51 s — el sensor
+sigue diciendo que el cuarto está oscuro, así que no hizo falta ni un
+temporizador ni una bandera. §8 lo cuenta entero.
+
 #### Los umbrales, medidos contra la sala real
 
 **El 100 y el 10 son herencia del BH1750**: se eligieron describiendo «cuarto iluminado» y «luz tenue de noche», sobre la mesa. La primera medición real ya enseñó el problema — **137 lux de noche con los focos encendidos cae en la banda alta**, o sea que el umbral de 100 **no separa «de día» de «de noche con lámparas»**: mete las dos en 100 %.
@@ -1161,7 +1193,7 @@ La corrección cuenta lecturas fallidas seguidas y, tras `LUZ_FALLOS_MAX = 5` �
 
 ### Touch capacitivo nativo del ESP32
 
-Pad conductor pegado **por dentro** de la pared de la carcasa, en el canto superior. Funciona a través de 1.5-2 mm de plástico; la carcasa final es de **PETG negro**, con la pared adelgazada a 1.5 mm en la zona del pad.
+Pad conductor pegado **por dentro** de la pared de la carcasa, en el canto superior. Funciona a través de 1.5-2 mm de **PETG** —la carcasa final es de PETG negro—, y el grosor en la zona del pad sale de la medición del banco (BOM, tecla `t`); la carcasa v3 lo deja provisional en 1.5 mm.
 
 **Sin sensor visible. Sin botón. $0 de costo. Un GPIO.**
 
@@ -1175,13 +1207,104 @@ Pad conductor pegado **por dentro** de la pared de la carcasa, en el canto super
 
 Para un objeto que debe sentirse a producto terminado, esto supera a cualquier botón físico.
 
-### El umbral de lectura sigue sin calibrarse — depende del pad, que no existe
+### Un toque despierta la pantalla apagada, y sale gratis de la rampa
 
-El firmware trae hoy un umbral fijo (`TOUCH_THRESHOLD = 40` en `firmware/src/main.cpp`), marcado en el propio código como valor inventado, sin debounce.
+Desde que la banda oscura de §7 apaga el backlight **del todo**, tocar el marco a
+oscuras cambiaba de foto sobre una pantalla negra: el gesto funcionaba y no se
+veía nada. Ahora el backlight sube al 100 % con el dedo todavía puesto.
 
-La calibración real no es una constante: es tomar la media de N lecturas de `touchRead()` al arrancar y multiplicarla por ~0.6 para fijar el umbral, más exigir 2-3 lecturas consecutivas de flanco antes de aceptar un toque como real (evita falsos positivos de una sola lectura ruidosa). El valor crudo de reposo depende del pad elegido, del grosor real de PETG entre el pad y el dedo, de la humedad y de la temperatura — es const específica de esta unidad física, no una constante de diseño.
+**No lleva temporizador propio, y ése es el detalle que importa:** la rampa de un
+paso de `updateBrightness()` lo devuelve solo a 0 en ~51 s, porque el sensor
+sigue diciendo que el cuarto está oscuro. Cero estado nuevo — ni deadline, ni
+bandera. Y como la condición es `currentBacklight == 0`, la primera bajada de la
+rampa la desarma, así que un dedo apoyado no mantiene la pantalla encendida a la
+fuerza.
 
-**No se fija hoy porque el pad conductor todavía no existe** (ver la sección de touch capacitivo del BOM). Cualquier número que se escriba antes de tener el pad soldado sería tan inventado como el `40` actual.
+### La línea base PERSIGUE — no se calibra al arrancar
+
+La versión anterior de esta sección proponía la calibración obvia: media de N
+lecturas de `touchRead()` al arrancar por ~0.6. **Tiene tres fallos, y el primero
+es de los que solo aparecen en la sala:**
+
+1. **Un dedo apoyado en el pad mientras el marco arranca deja la base mal para
+   siempre.** El marco vive enchufado a la pared, así que cualquiera que lo mueva
+   y lo reconecte agarrándolo por donde se toca cae justo ahí — y el touch se
+   queda muerto sin que nada lo diga.
+2. La deriva térmica y la humedad mueven el reposo a lo largo del día, y un
+   absoluto calibrado en frío envejece en un objeto que vive 24/7.
+3. Obliga a medir esa deriva antes de saber cuánto margen dejar.
+
+Lo que hace el firmware es **perseguir el reposo a un paso por lectura**, la
+misma rampa que ya usa el backlight, y **solo cuando no hay dedo** — si avanzara
+siempre, un toque se arrastraría su propia referencia y el gesto se cancelaría
+solo. Con eso los tres fallos desaparecen, y cambia lo que hay que medir: **lo
+estable no es la base, es el delta**. La comprobación de deriva pasa a ser dos
+corridas del banco, en frío y en caliente, mirando que el delta no se mueva.
+
+La lógica vive en `firmware/src/toque.h`, compartida con el banco del display por
+la misma regla que `luz.h` y `nombre.h` — y aquí es más fuerte todavía: el banco
+es donde se **mide** el umbral, así que si probara otra lógica el número no
+transferiría.
+
+**Debounce de 3 lecturas seguidas por flanco.** `touchRead()` del ESP32 clásico
+es ruidoso, y una sola lectura espuria dispara `showNextPhoto()`, que se lleva
+~290 ms decodificando. Cuesta unas tres vueltas de `loop()` de latencia, o sea
+décimas de nada contra los 800 ms que separan corto de largo.
+
+**Y hay una salida para el pad atascado:** más de 60 s «dentro» no es un dedo
+—es un objeto encima del marco, humedad, o el pad rozando algo dentro de la
+carcasa—, así que la base se readapta y **no se emite gesto**. Sin eso el touch
+se queda muerto hasta desenchufar, que es lo que la regla 2 no permite.
+
+Siete casos corren en cada arranque sin pad ni hardware (`toqueOk()`), y los dos
+que de verdad justifican el archivo son el del dedo puesto al sembrar la base y
+el del pad atascado: los dos se manifiestan como «el toque va raro a veces», que
+es lo que nadie puede depurar desde otra ciudad.
+
+### `TOQUE_DELTA` — el umbral, y el grosor de pared que decide
+
+<!-- PENDIENTE DE MEDICIÓN: la tecla `t` de [env:display] cierra las dos filas.
+     TOQUE_DELTA = 15 es provisional y está marcado como tal en toque.h. -->
+
+El umbral es un **delta en counts** respecto de la base, no un valor absoluto, y
+sale de la tecla `t` del banco con un criterio doble: la **mitad** del delta pico
+más pequeño medido a través del cupón de PETG más grueso que vaya a llevar la
+carcasa, y que ese valor quede **por encima de 5 σ** del ruido de reposo.
+
+**Esa medición decide también el grosor de pared en la zona del pad**, y por eso
+va antes de diseñar la carcasa: imprimirla y descubrir después que a 2.5 mm la
+señal no alcanza cuesta rediseñarla. Si no cumple las dos condiciones, la pared
+es demasiado gruesa — y eso es un dato de diseño mecánico, no un fallo del
+firmware. El número resultante vive en el BOM.
+
+Se corre cinco veces, una por condición: dedo directo sobre el cobre, a través de
+cada cupón de 1.5 / 2.0 / 2.5 mm, y el dedo **cerca sin tocar**, que es el margen
+contra el falso positivo.
+
+> **Los cupones se imprimen con los mismos perímetros y el mismo relleno que la
+> pared real.** Sólidos contra una carcasa al 20 % es otro dieléctrico y el
+> número no transfiere.
+>
+> **Y hay un confusor que no está en el pad:** el touch capacitivo funciona
+> porque el cuerpo está acoplado a tierra, así que el delta cambia según de dónde
+> cuelgue la placa. Hay que repetirlo con el cargador USB de dos pines que va a
+> alimentar el marco, no solo con el USB de la Mac. Es el mismo tipo de confusor
+> que «el cableado con el que se midió» del pendiente #3.
+
+### Un toque puede perderse mientras se decodifica una foto
+
+`loop()` se bloquea ~290 ms decodificando, y un toque que caiga **entero** dentro
+de esa ventana se pierde: son 290 ms de cada 30 s, o sea ~1 % del tiempo.
+
+<!-- PENDIENTE: la fase 2 de la tecla `t` reporta la duración real de cada toque
+     y decide esta fila. Si el más corto supera holgadamente los 290 ms, solo se
+     pierde el flanco y esto se queda como está. -->
+
+La salida, si la medición dice que molesta, es `touchAttachInterrupt()` como
+latch —el ISR pone una bandera `volatile` y `loop()` la consume al salir de la
+decodificación—. **No se construye hoy**, porque el umbral del hardware es fijo y
+no tiene base adaptativa: obligaría a mantener dos umbrales sincronizados, y eso
+solo se paga cuando el número lo pida.
 
 ---
 
@@ -1336,6 +1459,8 @@ Detalle y cifras en el BOM.
 | Barras negras | Calculadas en firmware | Horneadas en el JPEG |
 | Brillo | Automático por TSL2561, con histéresis de ±20 % y rama de saturación | Sensor de presencia (PIR/ultrasónico); BH1750 (se estropeó, y con un solo fotodiodo «100 lux» cambia 4× según la lámpara) |
 | Control manual | Touch capacitivo invisible | Botón físico, control remoto IR |
+| Umbral del touch | Delta en counts contra una base que **persigue** el reposo a un paso por lectura, en `firmware/src/toque.h` | Calibrar al arrancar con la media de N lecturas ×0.6: un dedo apoyado durante el arranque deja la base mal **para siempre**, y un absoluto no absorbe la deriva térmica ni la humedad en un objeto que vive 24/7 |
+| Toque perdido decodificando | Aceptado y documentado (~1 % del tiempo), decidido con la duración real medida | `touchAttachInterrupt()` como latch: obligaría a mantener dos umbrales sincronizados, porque el del hardware es fijo y no tiene base adaptativa |
 | Estado | LED RGB, apagado tras 30 s | Dos LEDs fijos permanentes |
 | Alimentación | USB-C a la pared | Batería LiPo |
 | Carcasa | PETG negro impreso sin soporte: carcasa frontal + tapa trasera + base cuna a 15° con llave asimétrica (no deja ponerlo de cabeza). Cierre con gancho arriba y 2 M3 roscados directo. Display sujeto por el PCB, nunca por el vidrio. Detalle en `carcasa/README.md` | PLA (se ablanda antes en un objeto cerrado 24/7), insertos termofijos (no hay en inventario), pata trasera (vuelca a 15°), cualquier soporte que permita girar el marco (§6), membranas en lugar de agujeros (el PETG negro no deja pasar la luz) |
@@ -1404,11 +1529,11 @@ De esos, **ya se probaron** la 4:3 y dos verticales de iPhone con EXIF 6 y 5 en 
     sobredimensionada. De paso venció la deuda de §9: `SD_ERROR` ya se apaga
     sola. Cifras en §3 y §6.
 
-    **Falta de esta pieza**: el toque corto no se ha podido probar —depende del
+    ~~**Falta de esta pieza**: el toque corto no se ha podido probar —depende del
     pad capacitivo, que todavía no existe (§8)— y la histéresis del brillo sigue
-    marcada como `TODO`, esperando al sensor de reposición. **La histéresis se
-    cerró el 8-ago-2026** al entrar el TSL2561: ±20 % sobre cada umbral, en una
-    función pura que se comprueba al arrancar (§7).
+    marcada como `TODO`.~~ **Las dos cerradas.** La histéresis el 8-ago-2026 al
+    entrar el TSL2561 (±20 % sobre cada umbral, función pura comprobada al
+    arrancar, §7), y el toque en el punto 16.
 
 15. **El marco recibe fotos por sí solo.** **Hecho, 7-ago-2026.** Las tres piezas
     que faltaban para que el regalo no dependa de una Mac, y que eran la misma
@@ -1504,4 +1629,33 @@ molesta, es que la galería no lance el siguiente `/delete` hasta que el anterio
 conteste, que es la disciplina de concurrencia 1 que §4 ya exige. Queda anotado
 antes que construido: con 26 borrados no se perdió ninguno.
 
-16. **Integración y modelado de la carcasa — en curso.** El prototipo v1 quedó modelado en Fusion (documento «Marco Ensamble») y exportado a `carcasa/` el 9-oct-2026, con todas las cotas como parámetros. Sigue imprimir la probeta de ajustes y el bisel recortado, sustituir los valores por defecto por medidas de calibrador, y luego la integración: soldar el UTP, cerrar, y recalibrar el touch (§8) y comprobar la atenuación del sensor (§7) con la carcasa puesta.
+16. **El marco responde al toque.** Cierra §8, el `TODO` del AP de §5 y el hueco
+    que dejó apagar el backlight en §7 — eran el mismo gesto visto de tres formas,
+    y ninguno era alcanzable sin pad.
+
+    - **`firmware/src/toque.h`**, compartido con el banco: base que persigue el
+      reposo en vez de calibrarse al arrancar, debounce de 3 lecturas por flanco,
+      y salida para el pad atascado. Siete casos corren en cada arranque **sin
+      hardware**, y los dos que justifican el archivo son el del dedo puesto
+      mientras se siembra la base y el del objeto apoyado.
+    - **El AP de recuperación**, con sus dos relojes, en `WIFI_AP_STA`, y el QR
+      cambiando a la dirección del marco en cuanto alguien se asocia.
+    - **Un toque despierta la pantalla apagada**, y la rampa de §7 la vuelve a
+      apagar sola. Cero estado nuevo.
+
+    **Coste**: RAM 56,848 B y flash 1,341,191 B, o sea **+16 B y +1,524 B** sobre
+    la referencia del 8-ago. Los 16 B de RAM son exactamente la `struct Toque`.
+
+    **La medición va antes que la carcasa, y ése es el orden que importa**: el
+    grosor de pared en la zona del pad sale de la tecla `t` del banco, no al
+    revés. Diseñar primero e imprimir para descubrir que a 2.5 mm la señal no
+    alcanza cuesta rediseñarla.
+
+17. **Integración y modelado de la carcasa — en curso.** El prototipo v3 está
+    modelado en Fusion (documento «Marco Ensamble», con los modelos CAD reales de
+    los cinco componentes) y exportado a `carcasa/` el 10-oct-2026, con todas las
+    cotas como parámetros. Sigue el test fit de la v3 impresa. En la v4 hay que
+    alejar la bolsa del pad del PCB del display y fijar su grosor con la tabla de
+    la tecla `t`, que es lo que pide el punto 16. Después, la integración: soldar
+    el UTP, cerrar, fijar `TOQUE_DELTA` con el pad montado y comprobar la
+    atenuación del sensor (§7) con la carcasa puesta.

@@ -263,8 +263,16 @@ sale es el USB-C, por el canto inferior trasero.
 - **Firmware, sensor:** con la carcasa cerrada, repetir la lectura de noche
   (126–137 lux sin carcasa). Si la atenuación queda < 5.8×, los umbrales 10/300 siguen
   separando todas las condiciones medidas; si no, se escalan en `updateBrightness()`.
-- **Firmware, touch:** calibrar `TOUCH_THRESHOLD` con el pad real tras 1.5 mm de PETG
-  negro (media de N lecturas × 0.6 + 2–3 lecturas consecutivas, como dice §8).
+- **Touch:**
+  - Fijar `TOQUE_DELTA` (`firmware/src/toque.h`, provisional en 15) con la tecla `t`
+    del banco, a través de cupones de PETG impresos con los **mismos perímetros y
+    relleno** que la carcasa. Eso decide `pared_touch`: si a 1.5 mm la señal no
+    alcanza, la pared es demasiado gruesa.
+  - **Mover la bolsa del pad en la v4.** La sección de touch del BOM pide nada de
+    masa detrás del pad, y en la v3 quedó a ~2 mm del borde superior del PCB del
+    display y casi encima de su header. Candidata: hacia la derecha (X > 45 mm,
+    lejos del header) y hacia atrás (lejos del PCB), sin tocar la ranura del
+    gancho. Achicarla a 15 × 15 mm, porque el BOM recomienda un pad de 12–15 mm.
 - **Firmware, LED:** ahora mira al frente por un agujero de Ø3. Revisar si hay que
   bajar el brillo con `escala[3]`; el apagado a los 30 s se mantiene.
 

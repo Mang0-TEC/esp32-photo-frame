@@ -51,7 +51,7 @@ flasheo se hace igual, y descubrirlo después de soldar cuesta la pantalla enter
 | 12 | Resistencias **220 Ω** (LED rojo), 470 Ω ×2 (LED verde y azul), 10 kΩ, más surtido | El rojo llevaba 1 kΩ y **se cambió a 220 Ω** tras verse más apagado que los otros dos; con eso el blanco sale blanco. El 1 kΩ queda libre. Las dos 470 Ω están puestas en el LED, y **no hace falta una tercera**: el backlight resultó Caso B y va directo a GPIO19, sin transistor y sin resistencia de base. Ver la nota de corriente por canal, abajo |
 | 13 | Header macho 2.54 mm (9 pines) | ✔ Confirmado |
 | 14 | Cable UTP Cat5e (núcleo sólido 24 AWG) | ✔ Sustituye jumpers Dupont |
-| 15 | Filamento **PETG negro** | Carcasa frontal, tapa trasera y base. **Sustituye al PLA** (decidido al diseñar la carcasa, oct-2026): aguanta mejor el calor del backlight y del ESP32 en un objeto cerrado y prendido 24/7. ~70 g el juego completo. Detalle en [`carcasa/README.md`](../carcasa/README.md) |
+| 15 | Filamento **PETG negro** | Carcasa frontal, tapa trasera y base, ~70 g el juego completo — detalle en [`carcasa/README.md`](../carcasa/README.md). **Confirmado 10-oct-2026**, y no es PLA: el PLA reblandece cerca de 60 °C, y esto vive encendido 24/7, quizá junto a una ventana, dentro de una carcasa sellada donde el AMS1117 ya calienta. El PETG aguanta y es menos frágil. **El grosor de pared en la zona del pad NO es libre**: lo fija la medición del touch — ver la sección de touch capacitivo |
 | 17 | Módulo **TSL2561** (Handson Technology, SKU `SSR1026`) — $127 ya pagados | **Sustituye al GY-302/BH1750**, que se estropeó en el banco. `Vin` va al riel de **5 V**, no a 3.3: lleva LDO propio (`662K`). Cinco pines, de los que se usan cuatro — `INT` se deja al aire. Dirección I2C **`0x39`, medida en placa**. Sección propia más abajo |
 | 16 | ESP32 DevKit **USB-C** — reposición, $126 ya pagados | **Candidata a unidad final.** Puente **CH340** (`0x1a86:0x7523`). **Los `.ini` ya no fijan el puerto**: se quitaron `upload_port` y `monitor_port` de los cinco envs para que PlatformIO autodetecte, porque el sufijo del tty es el location ID del USB y cambia al mover el cable de puerto. Detalle del mecanismo en `CLAUDE.md`. Verificado con esptool: `ESP32-D0WD-V3 rev v3.1`, cristal 40 MHz, flash 4 MB, MAC `70:4b:ca:48:d3:ec`. **WROOM confirmado** — `PSRAM 0 B` medido desde el banco del LED |
 
@@ -66,7 +66,7 @@ PCB. Sirve para todo el desarrollo del firmware — el chip es el mismo
 
 | # | Componente | Cant. | Para qué |
 |---|---|---|---|
-| 16 | Pad conductor para touch capacitivo | 1 | Ver opciones abajo |
+| ~~16~~ | ~~Pad conductor para touch capacitivo~~ | 1 | **Resuelto: cinta de cobre** (opción 2), cuadrado de ~12-15 mm con un hilo de UTP a GPIO32. Cableado, trampas y montaje en la sección de touch capacitivo |
 | 17 | Termofit surtido | — | Aislar uniones soldadas |
 | 18 | Soldadura + flux | — | Header y cableado |
 | 19 | Silicón caliente | — | Alivio de tensión del UTP |
@@ -359,9 +359,9 @@ Para el marco es el reparto correcto — lo que no puede tartamudear es la image
 
 ### Touch capacitivo
 
-El ESP32 tiene 10 pines de touch nativo (T0-T9). Un pad conductor pegado **por dentro** de la pared de la carcasa funciona a través de 1.5-2 mm de plástico. Sin sensor visible, sin botón, $0 de costo.
+El ESP32 tiene 10 pines de touch nativo (T0-T9). Un pad conductor pegado **por dentro** de la pared de la carcasa funciona a través de 1.5-2 mm de **PETG**. Sin sensor visible, sin botón, $0 de costo.
 
-> **En la carcasa real el pad va en el canto superior**, en una bolsa de 25 × 18 × 0.5 mm que deja **1.5 mm de PETG negro** entre el pad y el dedo. La bolsa admite las opciones 1 a 3 de abajo. El PETG tiene una permitividad parecida a la del PLA, pero la sensibilidad se revalida con el pad montado: es justo la calibración que §8 de la especificación deja pendiente.
+> **En la carcasa v3 el pad va en el canto superior**, en una bolsa de 25 × 18 × 0.5 mm que deja 1.5 mm de PETG negro entre el pad y el dedo. Dos cosas de esta misma sección la corrigen, y se aplican en la v4: el grosor de 1.5 mm es **provisional** hasta llenar la tabla de la tecla `t`, y la bolsa quedó a ~2 mm del borde superior del PCB del display y casi encima de su header — masa justo detrás del pad, que es la trampa 2 de abajo.
 
 Opciones de pad, en orden de preferencia:
 
@@ -370,6 +370,85 @@ Opciones de pad, en orden de preferencia:
 3. **Alambre sólido enrollado en espiral plana** — funciona y ya está en inventario.
 4. **Papel aluminio de cocina** — funciona eléctricamente pero **no se puede soldar** (el óxido de aluminio lo impide). Requiere sujeción mecánica: prensado bajo cinta o con tornillo. Punto de falla dentro de carcasa cerrada.
 5. **Moneda de $1** con cable sujeto con cinta.
+
+#### Elegida la opción 2, cinta de cobre — cableado y montaje
+
+Cuadrado de **~12-15 mm de lado**: más pequeño no da delta, y más grande sube la
+capacitancia base y baja el delta **relativo**, que es lo que se mide.
+
+```text
+   cinta de cobre  ~12×12 mm
+   ┌──────────────┐
+   │              │        UTP, UN hilo, 5-10 cm
+   │      ▓ ←─────┼────────────────/\/\/\──────────  GPIO32  (T9)
+   │   soldadura  │              1 kΩ, junto al ESP32
+   └──────────────┘
+     cara pegada a la pared,
+     NADA de cobre ni masa detrás
+```
+
+**Sin GND, sin pull-up y sin capacitor.** El sensor mide el tiempo de carga del
+propio pad: todo lo que añada capacitancia fija sube la línea base y **encoge el
+delta**, que es la señal.
+
+**Tres trampas, y la primera contradice a este mismo documento a propósito:**
+
+1. **NO trenzar el hilo del touch con un retorno de tierra.** El cableado con UTP
+   de más abajo lo recomienda para las líneas SPI —reduce diafonía— y aquí es
+   exactamente lo contrario: un par trenzado son ~50-100 pF/m en paralelo con el
+   pad. **Misma bobina de cable, regla opuesta.** Y hay que rutearlo lejos de
+   GPIO19, que conmuta ~100 mA a 5 kHz.
+2. **Nada de masa detrás del pad** — ni plano de tierra, ni el PCB del display
+   (94.8 × 59.19 mm con sus masas), ni el devkit. El instinto de blindar una
+   señal sensible mata el sensor.
+3. **El delta depende de si el cargador tiene tierra.** El touch funciona porque
+   el cuerpo está acoplado a tierra, y una fuente USB de dos pines acopla peor
+   que el USB de la Mac. Hay que medir con las dos. Mismo tipo de confusor que
+   «el cableado con el que se midió» del pendiente #3.
+
+**La resistencia de 1 kΩ es ESD, y en el marco terminado no hace falta.** Limita
+el pico que un dedo cargado mete al pin: con el modelo de cuerpo humano (1.5 kΩ
+propios) y 4 kV, pasa de 2.7 A a 1.6 A. Pero **en el marco el dedo nunca toca
+cobre, toca PETG**, cuya rigidez dieléctrica (~15-20 kV/mm) hace que 1.5 mm
+aguanten 20+ kV: la pared ya es mejor protección de lo que puede ser una
+resistencia en serie. Gana su sitio **durante la medición**, con el cobre desnudo
+en protoboard. Se deja puesta para que el número del banco y el del marco salgan
+del mismo circuito; su coste es un RC de ~20 ns contra un periodo de medición de
+microsegundos. Valor no crítico (470 Ω - 2 kΩ), y **el 1 kΩ ya está libre en
+inventario**: es el que salió del LED rojo al bajarlo a 220 Ω.
+
+**Al soldar la cinta:** es de ~0.05 mm y el soldador la agujerea. Doblar una
+esquina sobre sí misma para tener doble espesor y soldar ahí, punta a 300-320 °C,
+hilo ya estañado, un punto y fuera — el adhesivo humea si te entretienes. Y
+**silicón caliente encima**, que es el alivio de tensión que este documento ya
+exige para todas las uniones: la cinta se despega de un tirón.
+
+> **En protoboard el número sale pesimista** —cable largo, tiras metálicas—, o
+> sea que lo que funcione ahí funciona mejor soldado. Dirección segura, al revés
+> del barrido de SPI del pendiente #3.
+
+#### El umbral y el grosor de pared — tecla `t` de `[env:display]`
+
+<!-- PENDIENTE DE MEDICIÓN. Al correr la tecla `t` se rellenan las dos filas y se
+     fija TOQUE_DELTA en firmware/src/toque.h, hoy provisional en 15. -->
+
+| Condición | Ruido σ | Delta pico |
+|---|---|---|
+| Dedo directo sobre el cobre | | |
+| A través de 1.5 mm de PETG | | |
+| A través de 2.0 mm de PETG | | |
+| A través de 2.5 mm de PETG | | |
+| Dedo cerca, sin tocar | | |
+
+`TOQUE_DELTA` se fija con un criterio doble: la **mitad** del delta pico más
+pequeño a través del cupón más grueso que vaya a llevar la carcasa, y que ese
+valor quede **por encima de 5 σ** del ruido de reposo. Si no cumple las dos, la
+pared es demasiado gruesa — y eso es un dato de diseño mecánico, no un fallo del
+firmware.
+
+> **Los cupones se imprimen con los mismos perímetros y el mismo relleno que la
+> pared real.** Sólidos contra una carcasa al 20 % es otro dieléctrico y el
+> número no transfiere.
 
 ### Cableado con UTP
 
@@ -1101,6 +1180,78 @@ colgada de otro sitio.
 >
 > La prueba solo discrimina **con `Vin` a 5 V**. Repetida a 3.3 V no dice nada,
 > porque entonces las dos topologías posibles dan la misma lectura.
+
+#### El módulo se averió el 10-ago-2026 y SE REPARÓ: le falta el condensador de 10 µF
+
+**Estado físico actual: el módulo NO está de fábrica, y hay que saberlo antes de
+compararlo con su esquemático.** El cerámico de 10 µF de la salida del LDO (C2)
+se agrietó y quedó en cortocircuito; se quitó y **se sustituyó por un
+electrolítico de 10 µF / 63 V de through-hole**, soldado así:
+
+| Pata | Va a |
+|---|---|
+| **Positivo** | uno de los dos pads que dejó libre el cerámico — el que da 3.3 V contra GND |
+| **Negativo** (franja) | el pin **`GND` del header** |
+
+**El negativo al header es deliberado, no pereza.** Es la misma red —en el módulo
+la tierra es un plano continuo— y a cambio el condensador queda anclado a un
+taladro pasante con pad grande en vez de a un pad SMD de 0805, que es mucho más
+robusto para una lata que va a vivir dentro de una carcasa. El lazo se alarga unos
+nanohenrios y aquí da igual: **el trabajo de lazo corto lo siguen haciendo los dos
+cerámicos de 0.1 µF que no se tocaron**, y lo que le faltaba al riel era capacidad
+de grueso a baja frecuencia. Bulk lejos, cerámica cerca.
+
+Que sea electrolítico tampoco es un problema: los LDO que se desestabilizan son
+los que exigen ESR **mínimo**, y el ESR de un electrolítico más bien añade un cero
+que ayuda al margen de fase.
+
+**Lleva silicón caliente**: de pie sobre dos alambres, la lata es una palanca.
+
+El cuadro, por si vuelve a pasar con otro módulo:
+
+| Síntoma | Medida |
+|---|---|
+| El `662K` **hirviendo**, el componente más caliente del montaje | — |
+| Consumo por `Vin` | **0.23-0.24 A**, o sea 400× los 0.6 mA de especificación |
+| `Vin` contra GND | 4.0 V — los 230 mA hundían el riel de 5 V del devkit |
+| Riel de 3.3 V contra GND | **0.1 V** |
+| Resistencia riel↔GND | **<1 Ω** |
+
+Los 230 mA son el **límite de corriente** del XC6206 empujando contra el corto, y
+la tensión del riel es ese límite por la resistencia del corto. Cuando las tres
+medidas cuadran entre sí, el diagnóstico está cerrado.
+
+> **La trampa del diagnóstico, y cuesta una tarde: EN CIRCUITO, los componentes
+> en paralelo son indistinguibles.** Los tres condensadores del riel, el `VDD`
+> del chip y la salida del regulador cuelgan de los mismos dos nodos, así que con
+> el riel en corto **todos** marcan continuidad con GND en sus dos terminales. Eso
+> no significa «están todos malos»: significa «el riel está en corto», que ya se
+> sabía. La única salida es quitarlos de uno en uno midiendo después de cada uno.
+> La alternativa de laboratorio —inyectar corriente constante y seguir la caída de
+> microvoltios por el cobre— necesita fuente de banco y un multímetro que no es el
+> de mano.
+
+**El diagnóstico también respondía a la causa raíz, y por eso valía la pena
+aunque el módulo acabara en la basura.** Si el corto hubiera persistido tras
+quitar los tres condensadores, estaría dentro del chip o del regulador — la misma
+firma que mató al BH1750, y la sospecha de un problema sistémico. **Salió un
+pasivo agrietado**, o sea mecánica o azar. Las dos averías tienen mecanismos
+**distintos** y no hay patrón que perseguir.
+
+**Verificado tras la reparación:** riel a 3.3 V, `Vin` de vuelta a 4.7 V,
+**regulador Y lata del electrolítico a temperatura ambiente** —lo segundo es lo
+que confirma la polaridad, porque un electrolítico invertido con 3.3 V encima se
+calienta antes de fallar—, `0x39` respondiendo, y la tecla `L` dando
+**135.7 lux con 0 % de dispersión** —ocho de diez muestras idénticas al count—
+dentro del rango de 126-137 medido antes de la avería y con el mismo cociente
+Ch1/Ch0. Sin el condensador daba 132.4 con 1 %; la mejora hasta el 0 % es
+probablemente escena más quieta y no el condensador, así que lo que se afirma es
+que **el electrolítico no introdujo degradación**, no que sea mejor.
+
+> Ojo con lo que esa última prueba demuestra: el sensor **integra 101 ms**, así que
+> promedia cualquier oscilación del LDO hasta hacerla invisible. El 1 % dice que
+> el riel sirve para esta aplicación, **no** que el regulador sea estable. La
+> evidencia contra la oscilación es que el `662K` se quedó a temperatura ambiente.
 
 #### El encapsulado decide los coeficientes, y no se puede leer del chip
 

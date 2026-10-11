@@ -24,6 +24,7 @@
 #include "LedRGB.h"
 #include "nombre.h"
 #include "tarjeta.h"   // la SD por sdspi del IDF; ahí está por qué NO se usa SD.h
+#include "toque.h"     // touch capacitivo; ahí está por qué la base persigue
 // GENERADO en cada build por tools/empaquetar_pagina.py, y por eso no está en
 // git: son ~183 KB de fuente de C que cambian enteros al tocar el HTML.
 #include "pagina.h"
@@ -31,7 +32,7 @@
 // ============================================================================
 // Pines (BOM-marco-fotos-esp32.md, Mapa de GPIOs)
 // ============================================================================
-constexpr uint8_t PIN_LED_R = 25;   // Rojo, 220 Ω (era 1 kΩ; ver el BOM)
+constexpr uint8_t PIN_LED_R = 25;   // Rojo, 220 Ω 
 constexpr uint8_t PIN_LED_G = 33;   // Verde, 470 Ω
 constexpr uint8_t PIN_LED_B = 4;    // Azul, 470 Ω
 constexpr uint8_t PIN_BL    = 19;   // Backlight display (PWM LEDC)
@@ -57,16 +58,12 @@ static volatile LedRGB::State ledPedido = LedRGB::State::TOTAL;   // TOTAL = nad
 
 // ============================================================================
 // Touch capacitivo
+//
+// La lógica entera —base que persigue, debounce, corto contra largo— vive en
+// src/toque.h, compartida con el banco del display porque es allá donde se MIDE
+// el umbral: si el banco probara otra cosa, el número no transferiría.
 // ============================================================================
-static uint32_t touchStartMs = 0;
-static bool     touchActive  = false;
-static constexpr uint32_t TOUCH_LONG_MS  = 800;
-// ponytail: umbral inventado y sin debounce. El valor crudo de reposo depende
-// del pad, del grosor del PLA, de la humedad y de la temperatura, así que esto
-// va derivado de una media de N lecturas al arrancar (×0.6) más 2-3 lecturas
-// consecutivas para validar el flanco. No se fija hoy porque el pad todavía no
-// existe y cualquier número escrito sin él es igual de inventado que éste.
-static constexpr uint16_t TOUCH_THRESHOLD = 40;
+static Toque toque;
 
 // ============================================================================
 // Fotos — manifiesto y reproducción (§3 y §6)
@@ -161,6 +158,32 @@ static uint32_t qrHasta = 0;   // deadline en ms; 0 = no hay QR en pantalla
 // reloj es solo la salida para cuando esa visita no llega nunca. Y el mismo
 // valor que §5 le da al AP: cinco minutos.
 static constexpr uint32_t QR_MS = 300000;
+
+// ============================================================================
+// AP de recuperación (§5)
+//
+// El día que cambien el módem, el marco sigue mostrando fotos —eso ya estaba—
+// pero tiene que seguir habiendo forma de SUBIRLAS, o la regla 2 se cumple a
+// medias. El toque largo sin WiFi levanta `Marco-Fotos` y la página se sirve
+// sobre el propio AP, sin router de por medio.
+//
+// No hay AP permanente a propósito: sería un punto de exposición 24/7 y regla 3.
+// Se baja solo con DOS relojes de cinco minutos, que es lo que pide §5:
+//
+//   - Si nadie se asocia, vence y baja.
+//   - Si hay alguien asociado, el reloj se reinicia. Así una tanda de 30 fotos
+//     no se corta a la mitad.
+//
+// El segundo reloj mira `softAPgetStationNum()` y no las peticiones HTTP.
+// Es estrictamente MÁS generoso —un cliente asociado pero quieto también lo
+// mantiene— y no obliga a instrumentar los cinco handlers. La contrapartida es
+// que un teléfono que se quede asociado para siempre deja el AP arriba; se
+// acepta, porque es literalmente lo que §5 pide («se mantiene»).
+//
+// Reutiliza QR_MS: el comentario de arriba ya dice que es el mismo valor que §5
+// le da al AP, y dos constantes con el mismo número acaban divergiendo.
+static uint32_t apHasta    = 0;   // deadline en ms; 0 = AP abajo
+static uint8_t  apClientes = 0;   // para detectar el flanco 0 → alguien se unió
 
 // Versión 3: 29×29 módulos y 53 bytes de capacidad con ECC bajo. Las dos cargas
 // de este firmware miden 38 y ~22, así que entran con holgura.
@@ -288,10 +311,19 @@ static void autocomprobar() {
     // delegar a una librería, así que tienen que gritar si alguien los toca.
     const bool okLux = luzLuxOk();
 
-    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)  qrBuf: %s (%u)  lux: %s\n",
+    // El touch, sin pad y sin tocar nada: series sintéticas de lecturas contra
+    // toqueActualizar(). Lo que atrapa no es que clasifique —eso es trivial—
+    // sino que el debounce filtre una lectura suelta y que la base CONVERJA
+    // cuando alguien arranca el marco con el dedo encima del pad. Los dos fallos
+    // se ven como «el toque va raro a veces», que es lo que nadie puede depurar
+    // desde otra ciudad.
+    const bool okToque = toqueOk();
+
+    Serial.printf("[autocomprobacion] nombreValido: %s  lerp: %s (medio=%u)  qrBuf: %s (%u)  lux: %s  toque: %s\n",
                   ok ? "ok" : "*** FALLA ***", okFade ? "ok" : "*** FALLA ***", medio,
                   okQR ? "ok" : "*** FALLA ***", (unsigned)QR_BUF,
-                  okLux ? "ok" : "*** FALLA ***");
+                  okLux ? "ok" : "*** FALLA ***",
+                  okToque ? "ok" : "*** FALLA ***");
 }
 
 // ============================================================================
@@ -592,6 +624,31 @@ void loop() {
     handleTouch();
     updateBrightness();
 
+    // Los dos relojes del AP de recuperación (§5). Va ANTES de la rama del QR:
+    // el QR que se pinta aquí lo gestiona esa rama desde la vuelta siguiente.
+    if (apHasta) {
+        const uint8_t clientes = WiFi.softAPgetStationNum();
+
+        // Alguien acaba de unirse. El QR de setup ya cumplió —sirvió para
+        // entrar a la red— y ahora la pregunta es OTRA: a qué dirección ir.
+        // Sin esto, quien escanea se queda dentro del AP sin saber a dónde, y
+        // teclear 192.168.4.1 no se le ocurre a nadie que no lo sepa ya.
+        if (clientes && !apClientes) {
+            Serial.println("[ap] alguien se unio — QR con la direccion del marco");
+            drawUsageQR();
+        }
+        apClientes = clientes;
+
+        if (clientes) {
+            apHasta = millis() + QR_MS;      // reloj 2: se reinicia mientras haya alguien
+        } else if ((int32_t)(millis() - apHasta) >= 0) {
+            Serial.println("[ap] nadie en 5 min — bajando");
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_STA);
+            apHasta = 0;
+        }
+    }
+
     // Un QR en pantalla se retira por lo que llegue antes: alguien abrió la
     // página, o se acabó el minuto. Y mientras esté puesto BLOQUEA el cambio
     // periódico de foto de abajo — sin este `else`, los 30 s del temporizador
@@ -617,28 +674,61 @@ void loop() {
 }
 
 // ============================================================================
+// AP de recuperación — el toque largo sin WiFi (§5)
+// ============================================================================
+static void levantarAP() {
+    // AP_STA y no AP a secas: el STA se queda intentando, así que si el módem
+    // solo estaba apagado un rato el marco reconecta solo sin gesto de nadie.
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP("Marco-Fotos", "fotos1234");
+
+    // No hace falta DNSServer ni portal cautivo: el QR lleva la URL directa, y
+    // server.begin() ya corrió incondicionalmente en setup() —con WiFi o sin
+    // él— así que el AsyncWebServer escucha en 0.0.0.0:80 y sirve sobre el AP
+    // sin que haya nada que rearrancar. Ese detalle es lo que hace que esta
+    // función quepa en cinco líneas.
+    apHasta    = millis() + QR_MS;
+    apClientes = 0;
+
+    Serial.print("[ap] Marco-Fotos arriba en ");
+    Serial.println(WiFi.softAPIP());
+    led.setState(LedRGB::State::WIFI_SETUP);
+    drawSetupQR();
+}
+
+// ============================================================================
 // Touch capacitivo — gestos corto y largo
 // ============================================================================
 static void handleTouch() {
-    const bool touched = (touchRead(PIN_TOUCH) < TOUCH_THRESHOLD);
+    const Gesto g = toqueActualizar(toque, (uint16_t)touchRead(PIN_TOUCH), millis());
 
-    if (touched && !touchActive) {
-        touchActive = true;
-        touchStartMs = millis();
-        led.resetActivityTimer();
-    } else if (!touched && touchActive) {
-        const uint32_t duration = millis() - touchStartMs;
-        touchActive = false;
+    // Despertar la pantalla. Desde que la banda oscura de §7 apaga el backlight
+    // del todo, tocar el marco a oscuras cambiaba de foto sobre una pantalla
+    // negra: el gesto funcionaba y no se veía nada.
+    //
+    // Se enciende con el dedo todavía puesto —feedback inmediato— y la rampa de
+    // un paso de updateBrightness() la devuelve sola a 0 en ~51 s. CERO estado
+    // nuevo: ni deadline, ni bandera, ni temporizador. Y como la condición es
+    // `== 0`, la rampa de bajada la desarma en la lectura siguiente, así que un
+    // dedo apoyado no la mantiene encendida a la fuerza.
+    if (toque.dentro && currentBacklight == 0) setBacklight(LUZ_BRILLO[2]);
 
-        if (duration < TOUCH_LONG_MS) {
-            showNextPhoto();
-        } else if (WiFi.status() == WL_CONNECTED) {
-            drawUsageQR();          // QR con la IP actual, regenerado al vuelo
-        } else {
-            // TODO: levantar el AP con timeout de 5 min (§5) antes del QR.
-            drawSetupQR();
-        }
-    }
+    if (g == Gesto::NADA) return;
+
+    // Se queda en producción por el mismo criterio que la traza [luz]: solo sale
+    // al completarse un gesto, o sea unas pocas veces al día. Y es lo ÚNICO que
+    // valida el delta con el WiFi arriba — el banco no puede, porque su env no
+    // levanta radio.
+    Serial.printf("[toque] %s  base=%u pico=%u delta=%d dur=%lu ms\n",
+                  g == Gesto::LARGO ? "largo" : "corto", toque.base, toque.pico,
+                  int(toque.base) - int(toque.pico), (unsigned long)toque.durMs);
+
+    led.resetActivityTimer();
+
+    if (g == Gesto::CORTO)                  showNextPhoto();
+    else if (WiFi.status() == WL_CONNECTED) drawUsageQR();   // la IP, al vuelo
+    else if (!apHasta)                      levantarAP();
+    else                                    drawSetupQR();   // ya está arriba: repinta
 }
 
 // ============================================================================
@@ -1538,8 +1628,13 @@ static void drawSetupQR() {
 static void drawUsageQR() {
     // Se REGENERA al vuelo, y no es paranoia: el DHCP doméstico reasigna, así
     // que la IP de hoy puede no ser la de la semana que viene.
+    //
+    // Con el AP de recuperación arriba la dirección buena es la SUYA (192.168.4.1
+    // por defecto), no la del STA: localIP() estaría vacía o apuntaría a una red
+    // que ya no responde, que es justo el caso que levantó el AP.
+    const IPAddress ip = apHasta ? WiFi.softAPIP() : WiFi.localIP();
     char url[32];
-    snprintf(url, sizeof url, "http://%s", WiFi.localIP().toString().c_str());
+    snprintf(url, sizeof url, "http://%s", ip.toString().c_str());
     // La IP también en texto: cuesta una línea y cubre a quien prefiera teclearla.
     drawQR(url, "Escanea para subir fotos", url + 7);
 }

@@ -48,12 +48,17 @@
 #include "nombre.h"    // nombreValido(), compartida con el marco y el banco de red
 #include "tarjeta.h"   // el montaje por sdspi del IDF, y POR QUÉ no se usa TARJETA.h
 #include "luz.h"       // TSL2561, y POR QUÉ no hay librería de sensor
+#include "toque.h"     // touch capacitivo: la MISMA lógica que corre el marco
 
 // Mapa de GPIOs del BOM. Los del display llegan por build_flags —TFT_eSPI los
 // necesita como macros—, así que aquí solo van los que este sketch maneja.
 constexpr uint8_t PIN_BL      = 19;   // Backlight, PWM por LEDC
 constexpr uint8_t PIN_I2C_SDA = 21;
 constexpr uint8_t PIN_I2C_SCL = 22;
+constexpr uint8_t PIN_TOUCH   = 32;   // T9. Un cable al pad y nada más: sin GND,
+                                      // sin pull-up y sin capacitor. Todo lo que
+                                      // añada capacitancia fija sube la base y
+                                      // ENCOGE el delta, que es la señal.
 
 // Lector SD H95, en HSPI. El display va en VSPI por defecto de TFT_eSPI, y
 // USE_HSPI_PORT NO se define nunca: ésa es toda la separación de buses.
@@ -415,6 +420,145 @@ static void medirLuz() {
                 media > 100.0f ? "brillante, 100 %" : media > 10.0f ? "tenue, 50 %" : "oscuro, 20 %");
   Serial.println(F("    Si eso NO es lo que se quiere ver aquí, el número que hay que"));
   Serial.println(F("    cambiar es el umbral de main.cpp, no la lectura."));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  Touch capacitivo — el umbral de §8 Y el grosor de pared de la carcasa
+//
+//  Esta tecla decide DOS cosas, y la segunda es la que ordena el trabajo que
+//  queda: cuánto puede medir la pared en la zona del pad. Diseñar la carcasa
+//  primero e imprimirla para descubrir que a 2.5 mm la señal no alcanza cuesta
+//  rediseñarla; medir antes cuesta una tarde.
+//
+//  Se corre CINCO veces, una por condición:
+//      1.    dedo directo sobre el cobre      → el techo del delta
+//      2-4.  a través de cada cupón de PETG   → 1.5 / 2.0 / 2.5 mm
+//      5.    dedo CERCA sin llegar a tocar    → el margen del falso positivo
+//
+//  Los cupones se imprimen con los MISMOS perímetros y el MISMO relleno que
+//  vaya a llevar la pared real. Sólidos contra una carcasa al 20 % es otro
+//  dieléctrico y el número no transfiere.
+//
+//  Y hay un confusor que no está en el pad: el touch funciona porque el cuerpo
+//  está acoplado a tierra, así que el delta CAMBIA según de dónde cuelgue la
+//  placa. Hay que repetirlo alimentando del cargador USB de dos pines que va a
+//  alimentar el marco, no solo del USB de la Mac. Mismo tipo de confusor que
+//  «el cableado con el que se midió» del pendiente #3.
+//
+//  Lo que NO puede medir este env es el ruido del WiFi, que aquí no se levanta.
+//  Eso lo valida la traza `[toque]` del marco, que vuelca base, pico y delta.
+// ──────────────────────────────────────────────────────────────────────
+
+// Ruido de la línea de reposo. `conDisplay` empuja bloques entre muestras: es
+// el confusor de SPI a 40 MHz más el PWM del backlight a 5 kHz, que en el marco
+// corren a centímetros del pad. Si sigma se dispara con eso, el umbral hay que
+// fijarlo contra ESTE número y no contra el de la placa quieta.
+static void ruidoReposo(const char *etiqueta, bool conDisplay) {
+  constexpr uint16_t N = 300;
+  double media = 0.0, m2 = 0.0;
+  uint16_t lo = 0xFFFF, hi = 0;
+
+  for (uint16_t i = 0; i < N; i++) {
+    if (conDisplay)
+      for (uint8_t b = 0; b < 20; b++)
+        tft.pushImage((b % 20) * 16, (b / 20) * 16, 16, 16, blk);
+
+    const uint16_t v = (uint16_t)touchRead(PIN_TOUCH);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+
+    // Welford: sigma en una pasada y sin guardar las 300 muestras en la pila.
+    const double d = double(v) - media;
+    media += d / (i + 1);
+    m2    += d * (double(v) - media);
+    delay(5);
+  }
+
+  const double sigma = sqrt(m2 / N);
+  Serial.printf("[t] reposo %-18s media %7.1f   min %5u   max %5u   sigma %5.2f\n",
+                etiqueta, media, lo, hi, sigma);
+}
+
+static void medirToque() {
+  Serial.println(F("\n[t] FASE 1 — ruido de reposo. NO toques el pad durante 3 s."));
+  ruidoReposo("placa quieta", false);
+  Serial.println(F("[t] ahora otros 3 s con el display empujando bloques. Sigue sin tocar."));
+  ruidoReposo("display+PWM", true);
+  Serial.println(F("    Si sigma sube mucho con el display, el umbral se fija contra ese."));
+
+  Serial.printf("\n[t] FASE 2 — 20 s. Toca el pad varias veces: cortos y alguno largo\n"
+                "    (>%lu ms). Se usa toqueActualizar() de src/toque.h, o sea EXACTAMENTE\n"
+                "    la lógica del marco, con TOQUE_DELTA = %u.\n",
+                (unsigned long)TOQUE_LARGO_MS, TOQUE_DELTA);
+  Serial.println(F("        gesto    base   pico  delta    dur"));
+
+  Toque t;
+  uint16_t n = 0, deltaMin = 0xFFFF, deltaMax = 0;
+  uint32_t deltaSuma = 0, durMin = 0xFFFFFFFF, durMax = 0, durSuma = 0;
+
+  const uint32_t hasta = millis() + 20000;
+  uint32_t ultimoVivo = 0;
+  while ((int32_t)(millis() - hasta) < 0) {
+    const uint16_t crudo = (uint16_t)touchRead(PIN_TOUCH);
+    const Gesto g = toqueActualizar(t, crudo, millis());
+
+    if (g != Gesto::NADA) {
+      const uint16_t delta = (t.base > t.pico) ? t.base - t.pico : 0;
+      Serial.printf("        %-7s %6u %6u %6u %6lu\n",
+                    g == Gesto::LARGO ? "LARGO" : "corto",
+                    t.base, t.pico, delta, (unsigned long)t.durMs);
+      n++;
+      if (delta < deltaMin) deltaMin = delta;
+      if (delta > deltaMax) deltaMax = delta;
+      deltaSuma += delta;
+      if (t.durMs < durMin) durMin = t.durMs;
+      if (t.durMs > durMax) durMax = t.durMs;
+      durSuma += t.durMs;
+    }
+
+    // Latido en vivo. Es lo ÚNICO que reporta la condición 5 —dedo cerca sin
+    // tocar— donde por definición no hay ningún gesto que volcar: ahí lo que se
+    // mira es cuánto se acerca `crudo` a la base sin llegar a cruzar el umbral.
+    if (millis() - ultimoVivo >= 500) {
+      ultimoVivo = millis();
+      Serial.printf("        · crudo %5u  base %5u  delta %4d%s\n",
+                    crudo, t.base, int(t.base) - int(crudo), t.dentro ? "  ← DENTRO" : "");
+    }
+    delay(10);   // el ritmo de loop() del marco
+  }
+
+  if (!n) {
+    Serial.println(F("\n[t] ningún gesto en 20 s. O el pad no está conectado a GPIO32, o el\n"
+                     "    delta no llega al umbral. Mira el latido de arriba: si `delta` sube\n"
+                     "    al acercar el dedo pero no llega a TOQUE_DELTA, es la pared o el\n"
+                     "    pad, no el cableado. Si no se mueve NADA, es el cable."));
+    return;
+  }
+
+  Serial.printf("\n[t] %u gestos   delta  min %u / media %lu / max %u"
+                "   dur  min %lu / media %lu / max %lu ms\n",
+                n, deltaMin, (unsigned long)(deltaSuma / n), deltaMax,
+                (unsigned long)durMin, (unsigned long)(durSuma / n), (unsigned long)durMax);
+
+  // El entregable. La mitad del delta más PEQUEÑO, porque el umbral tiene que
+  // aguantar el peor toque y no el mejor.
+  Serial.printf("[t] → TOQUE_DELTA sugerido para esta condición: %u  (la mitad del delta\n"
+                "    mínimo). Compruébalo contra sigma de la fase 1: tiene que quedar por\n"
+                "    encima de 5 sigma o el ruido disparará toques solo.\n", deltaMin / 2);
+
+  // El otro número que sale gratis de aquí, y decide si hace falta un latch por
+  // interrupción: loop() del marco se bloquea ~290 ms decodificando cada foto, y
+  // un toque que caiga ENTERO dentro de esa ventana se pierde.
+  if (durMin < 400)
+    Serial.printf("[t] OJO: el toque más corto duró %lu ms, y loop() del marco se bloquea\n"
+                  "    ~290 ms decodificando. Un toque así puede caber entero en la ventana\n"
+                  "    y perderse. Si se repite, toca el latch por touchAttachInterrupt().\n",
+                  (unsigned long)durMin);
+  else
+    Serial.printf("[t] el toque más corto duró %lu ms contra los ~290 ms que loop() del\n"
+                  "    marco pasa decodificando: no cabe entero en la ventana, así que como\n"
+                  "    mucho se pierde un flanco. No hace falta latch por interrupción.\n",
+                  (unsigned long)durMin);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1104,6 +1248,8 @@ static void menu() {
   Serial.println(F("  OTROS"));
   Serial.println(F("  i  escanea I2C → dirección del TSL2561 (pendiente #4, reabierto)"));
   Serial.println(F("  L  10 lecturas de luz: ch0/ch1 crudos y lux → calibra §7"));
+  Serial.println(F("  t  touch: ruido de reposo + delta por toque → el umbral de §8 y"));
+  Serial.println(F("     el grosor de pared. Se corre 5 veces: cobre, 3 cupones, y cerca"));
   Serial.println(F("  r  niveles en reposo del bus I2C + recuperación de esclavo trabado"));
   Serial.println(F("  p  vuelca la configuración compilada   ·   ?  este menú"));
   Serial.println(F("  SPI_FREQUENCY del display se edita en platformio.ini y se"));
@@ -1138,6 +1284,7 @@ static void tecla(char c) {
 
     case 'i': escanearI2C(); break;
     case 'L': medirLuz(); break;
+    case 't': medirToque(); break;
     case 'r': recuperarI2C(); escanearEn(PIN_I2C_SDA, PIN_I2C_SCL); break;
     case 'p': volcarConfig(); break;
 
@@ -1166,9 +1313,10 @@ void setup() {
   delay(300);
   Serial.println("\n=== BANCO DEL DISPLAY Y LA SD — no es el firmware del marco ===");
   volcarConfig();
-  Serial.printf("[autocomprobacion] nombreValido: %s  lux: %s\n",
+  Serial.printf("[autocomprobacion] nombreValido: %s  lux: %s  toque: %s\n",
                 nombreValidoOk() ? "ok" : "*** FALLA ***",
-                luzLuxOk()       ? "ok" : "*** FALLA ***");
+                luzLuxOk()       ? "ok" : "*** FALLA ***",
+                toqueOk()        ? "ok" : "*** FALLA ***");
 
   // El backlight ANTES de tft.begin(): sin esto el primer frame del arranque se
   // ve como un flash a pantalla llena, que es justo lo que la regla 3 no quiere

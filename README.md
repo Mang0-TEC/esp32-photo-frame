@@ -112,7 +112,7 @@ pio device monitor       # 115200
 
 ```
 ├── docs/            Decisiones de hardware y de diseño funcional
-├── carcasa/         STL/3MF imprimibles y notas de la carcasa (PETG)
+├── carcasa/         STL imprimibles y notas de la carcasa (PETG)
 ├── web/             Página de subida: redimensionado, recorte y red
 │   └── test/        Arnés de regresión sobre Chrome sin cabeza
 └── firmware/        Proyecto PlatformIO del marco

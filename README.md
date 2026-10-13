@@ -237,12 +237,13 @@ node web/test/correr.js
    Muestra todas las fotos de la tarjeta, paginadas de 60 en 60, con
    multi-selección y una sola confirmación. El objetivo es curación, no espacio:
    caben ~121,000 fotos. Sin endpoints ni dependencias nuevas.
-5. **Carcasa — en curso.** Prototipo v3 modelado en Fusion con los modelos CAD de
-   los componentes y exportado a `carcasa/` (10-oct-2026): PETG negro, sin
-   soporte, cierre con gancho + 2 M3 roscados directo, base cuna a 15°. Sigue el
-   test fit de la v3. En la v4, alejar el pad del PCB del display y fijar el grosor
-   de pared con la tecla `t`. Después la integración: soldar el UTP, fijar
-   `TOQUE_DELTA` y comprobar el sensor con la carcasa cerrada. Plan en
+5. **Carcasa — en curso.** Prototipo v5 en Fusion, con los modelos CAD de los
+   componentes, exportado a `carcasa/` (12-oct-2026): PETG negro, sin soporte,
+   cierre con gancho + 2 M3×25 roscados directo, base cuna a 15°. La v5 da holgura
+   a la calza del USB-C, pasa el touch a la pared derecha, abajo, y gira 180° el
+   TSL2561 para despejar los pines del display. Sigue el test fit
+   de la v5. Después la integración: soldar el UTP, fijar `TOQUE_DELTA` con el pad
+   en su sitio y comprobar el sensor con la carcasa cerrada. Plan en
    [`carcasa/README.md`](carcasa/README.md).
 
 Los dos documentos de `docs/` son la fuente de verdad del proyecto. Registran no

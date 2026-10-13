@@ -362,6 +362,8 @@ Para el marco es el reparto correcto — lo que no puede tartamudear es la image
 El ESP32 tiene 10 pines de touch nativo (T0-T9). Un pad conductor pegado **por dentro** de la pared de la carcasa funciona a través de 1.5-2 mm de **PETG**. Sin sensor visible, sin botón, $0 de costo.
 
 > **En la carcasa v3 el pad va en el canto superior**, en una bolsa de 25 × 18 × 0.5 mm que deja 1.5 mm de PETG negro entre el pad y el dedo. Dos cosas de esta misma sección la corrigen, y se aplican en la v4: el grosor de 1.5 mm es **provisional** hasta llenar la tabla de la tecla `t`, y la bolsa quedó a ~2 mm del borde superior del PCB del display y casi encima de su header — masa justo detrás del pad, que es la trampa 2 de abajo.
+>
+> **Desde la carcasa v5 el pad va en la pared derecha, abajo** (lado del lector SD, vista frontal), en una bolsa de 15 × 15 × 0.5 mm con la misma pared de 1.5 mm. El canto superior quedó para el TSL2561, la tira de pines del display y el gancho de la tapa. El pad queda a más de 10 mm de todo PCB, pero el hilo a GPIO32 crece a unos 7–10 cm, en el límite del rango de arriba.
 
 Opciones de pad, en orden de preferencia:
 

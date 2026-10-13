@@ -29,9 +29,9 @@ def alinear(design):
     T['SD Card Module - 1'] = M((0, 0, -1), (-1, 0, 0), (0, 1, 0),
                                    (ev('sd_x0 + sd_pcb_w / 2'), ev('tapa_y_int - sd_standoff') - 1.57 * mm,
                                     ev('sd_z0 + sd_pcb_l') - 23.76 * mm))
-    # TSL2561: x->-X (barrenos a la izquierda), y->-Y, z->+Z (chip arriba).
+    # TSL2561: x->X (barrenos a la derecha, header a la izquierda, v5), y->Y, z->+Z (chip arriba).
     zp = ev('pared + int_h + pared - sensor_pared - sensor_chip_aire - tsl_chip_h - tsl_t - sensor_separacion')
-    T['tsl2561'] = M((-1, 0, 0), (0, -1, 0), (0, 0, 1), (ev('tsl_x0') + 18 * mm, ev('tsl_y0') + 13.05 * mm, zp))
+    T['tsl2561'] = M((1, 0, 0), (0, 1, 0), (0, 0, 1), (ev('tsl_x0'), ev('tsl_y0') + 0.05 * mm, zp))
     # LED: y->-Y (punta al frente), x->X, z->-Z; punta contra la cara interior del bisel.
     T['Led5mm_RGB'] = M((1, 0, 0), (0, -1, 0), (0, 0, -1), (ev('led_x'), ev('pared') + 8.5 * mm, ev('led_z')))
 

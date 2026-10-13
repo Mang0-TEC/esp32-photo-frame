@@ -127,6 +127,34 @@ def cyl_y(comp, name, cx, cz, y0, d, h, op='new', target=None, taper=None):
     return _extrude(comp, name, sk.profiles.item(0), hexpr, op, target, taper)
 
 
+def box_x(comp, name, x0, y0, z0, dy, dz, dx, op='new', target=None):
+    """Caja paramétrica de eje X: rectángulo en plano YZ desplazado x0, extruida dx (+X)."""
+    sk = comp.sketches.add(_plane(comp, comp.yZConstructionPlane, x0, name))
+    sk.name = 'sk_' + name
+    x0v, y0v, z0v = ev(x0), ev(y0), ev(z0)
+    a = sk.modelToSketchSpace(adsk.core.Point3D.create(x0v, y0v, z0v))
+    b = sk.modelToSketchSpace(adsk.core.Point3D.create(x0v, y0v + ev(dy), z0v + ev(dz)))
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(a.x, a.y, 0), adsk.core.Point3D.create(b.x, b.y, 0))
+    pts = {}
+    for p in sk.sketchPoints:
+        if p == sk.originPoint:
+            continue
+        m = sk.sketchToModelSpace(p.geometry)
+        pts[(round(m.y - y0v, 4) != 0, round(m.z - z0v, 4) != 0)] = p
+    p00, py, pz = pts[(False, False)], pts[(True, False)], pts[(False, True)]
+    oy = H if abs(py.geometry.x - p00.geometry.x) > 1e-6 else V
+    oz = V if oy == H else H
+    o = sk.originPoint
+    _dim(sk, o, p00, oy, y0)
+    _dim(sk, o, p00, oz, z0)
+    _dim(sk, p00, py, oy, dy)
+    _dim(sk, p00, pz, oz, dz)
+    n = sk.xDirection.crossProduct(sk.yDirection)
+    hexpr = dx if n.x > 0 else '-(' + dx + ')'
+    return _extrude(comp, name, sk.profiles.item(0), hexpr, op, target)
+
+
 def report(comp):
     for b in comp.bRepBodies:
         mn, mx = b.boundingBox.minPoint, b.boundingBox.maxPoint

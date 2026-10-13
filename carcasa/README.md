@@ -1,4 +1,4 @@
-# Carcasa del marco — PETG negro, prototipo v4
+# Carcasa del marco — PETG negro, prototipo v5
 
 Modelo paramétrico en Autodesk Fusion: documento **«Marco Ensamble»** del proyecto
 *Marco Fotos* (un solo documento: cada pieza imprimible es un componente y
@@ -14,6 +14,85 @@ geometría.
 **Ejes del modelo:** origen en la esquina exterior inferior-izquierda-frontal; X a lo
 ancho, **Y hacia atrás (cara frontal en Y = 0)**, Z hacia arriba. El marco se modela
 vertical; sobre la mesa todo el conjunto queda girado 15° con la base plana.
+
+## Cambios v4 → v5 (12-oct-2026, tras el test fit de la v4 impresa)
+
+Test fit de la v4 con el display, el ESP32 montado en la tapa y el cable USB-C
+conectado.
+
+**Lo que quedó bien y no se toca:**
+- La ventana 0.5 mm más abajo: el bisel coincide con el borde del display y no asoma
+  nada del borde del vidrio.
+- La posición de las rejillas.
+- Las marcas de versión grabadas: sí sirven para distinguir impresiones.
+- Los M3×25: entran sin rajar el PETG, y el cajeado deja la cabeza al ras.
+- El LED, mirando al frente por su agujero.
+- Los dos tornillos inferiores sujetan bien la tapa por ahora.
+
+**Cambios:**
+- **Calza del USB-C con holgura.** Con el ESP32 en la tapa y el cable conectado, el
+  cuerpo del conector chocaba con la calza: los 0.5 mm de aire no alcanzaban (o el
+  conector es algo más largo que los 18 mm medidos, o el ESP32 queda un poco más
+  abajo). Además, la ranura apretaba el cable 0.2 mm, y así no hay forma de cerrar
+  sin forzarlo.
+  - Aire entre el cuerpo del conector y la calza: **2.5 mm** (`usb_calza_aire`). La
+    calza baja de 14.5 a 12.5 mm.
+  - Ranuras con holgura en vez de apriete: **0.5 mm por lado** (`usb_calza_holgura`,
+    nuevo). Ranura del cable de Ø5.0 (antes 3.8) y de la bota de 6.3 (antes 5.8). La
+    ranura del fondo sigue la misma regla y queda en 5.0 mm (`muesca_cable_w`).
+  - Se borró `usb_calza_apriete`.
+  - Sigue siendo un tope: un jalón mueve el conector a lo más 2.5 mm antes de que la
+    carcasa lo detenga. Lo que retiene el cable en el día a día es el doblez por la
+    muesca y el canal de la base.
+  - **Para otro cable:** un conector hasta 2.5 mm más largo entra sin cambiar nada.
+    Si es más largo, o la bota es más gruesa, cambia `usb_tope`, `usb_bota_d` y
+    `usb_bota_l` (medidos con el cable conectado), o `cable_d`, y la calza se recalcula
+    sola.
+- **Touch en la pared derecha, abajo** (lado del lector SD, vista frontal). El canto
+  superior ya tiene el TSL2561, la tira de pines del display con su UTP y el gancho de
+  la tapa; con el pad ahí no había manera de acomodar todo.
+  - Bolsa de 15 × 15 × 0.5 mm por dentro de la pared derecha (`touch_y`, `touch_z`
+    nuevo). La pared queda en 1.5 mm (`pared_touch`), igual que en la v4.
+  - Ocupa Z = 14–29 mm sobre la base exterior, y en Y de 15.3 a 30.3 mm, detrás de
+    la capa del display.
+  - El pad queda a **10.2 mm del PCB del display** (7.8 en la v4), a 10.6 del PCB del
+    lector SD, a 12.7 del electrolítico de 100 µF y a 3 mm de la tapa (plástico).
+    Libra el poste M3 derecho y queda por encima del labio de la base.
+  - Se borró `touch_x`; la bolsa del canto superior ya no existe.
+  - Los cupones de la probeta siguen sirviendo: la pared es la misma.
+- **TSL2561 girado 180°** (pedido del usuario). Ahora los barrenos quedan a la
+  derecha y el header a la izquierda, con los pines hacia la pared izquierda y no hacia
+  el centro.
+  - Libera el espacio sobre la tira de pines del display: el header del TSL2561 queda
+    a **5.4 mm** del volumen del UTP del display (antes 0.08). Además, sus pines quedan
+    junto a la pared, donde es más fácil soldar y acomodar los cables.
+  - La placa ocupa el mismo lugar (`tsl_x0` no cambia). El chip queda ahora a 6.5 mm
+    del extremo derecho, así que **el agujero del sensor se mueve 5 mm a la derecha**,
+    de X = 18 a X = 23 (`sensor_x`). Los pernos del techo pasan al extremo derecho, con
+    sus barrenos.
+  - El header queda a 1.1 mm del poste superior izquierdo de la tapa y a 6 mm del
+    ESP32.
+  - La repisa de la tapa que sostiene la placa pasa al extremo de los barrenos, para no
+    chocar con el header.
+  - `alinear_cad.py` coloca el CAD del TSL2561 con la nueva orientación.
+- **Marca «v5»** grabada en la tapa y en la barbilla de la carcasa frontal.
+- `fusion/helpers.py` ganó `box_x`, para cajas de eje X (cortes en las paredes
+  laterales).
+
+**Verificado:**
+- Intersecciones booleanas de las tres piezas entre sí y contra los dummies y los
+  CAD: los mismos choques intencionales que en la v4, menos el apriete de la calza
+  sobre el cable, que ya no existe.
+- Distancias mínimas: 2.5 mm del cuerpo del conector a la calza y 0.5 mm de la bota y
+  del cable a las paredes de sus ranuras.
+- Pruebas de punto en los bordes de la bolsa del touch, en las dos ranuras de la calza
+  y en el canto superior, que quedó macizo.
+- TSL2561: el túnel y el collar están centrados en X = 23, y el agujero viejo quedó
+  cerrado. Los pernos caen dentro de los barrenos del CAD real, a 0.25 mm de su borde y
+  sin tocarlo. La repisa nueva sostiene la placa sin tocar el header.
+
+**Reimprimir: carcasa frontal y tapa.** La base y la probeta de la v4 siguen
+sirviendo.
 
 ## Cambios v3 → v4 (11-oct-2026, tras el test fit de la v3 impresa)
 
@@ -188,7 +267,7 @@ Hay que reimprimir **carcasa frontal y tapa**. La base y la probeta no cambian.
 
 | Archivo | Pieza | Medidas (mm) | Volumen |
 |---|---|---|---|
-| `marco_carcasa_frontal.stl` | Bisel + cuatro paredes + calza del USB-C, una pieza | 63.8 × 33.8 × 106.2 | 29.5 cm³ |
+| `marco_carcasa_frontal.stl` | Bisel + cuatro paredes + calza del USB-C, una pieza (v5) | 63.8 × 33.8 × 106.2 | 29.0 cm³ |
 | `marco_tapa_trasera.stl` | Tapa + postes del display + cunas ESP32/SD + guías de tornillo | 59.3 × 28.4 × 102.8 | 15.3 cm³ |
 | `marco_base_cuna.stl` | Cuna de sobremesa a 15° | 63.8 × 50.8 × 21.6 | 17.7 cm³ |
 | `marco_probeta_ajustes.stl` | Probeta de rosca, LED y ventana del sensor + cupones de touch | 63 × 33 × 21 | 8.9 cm³ |
@@ -272,6 +351,8 @@ No hay ningún sitio donde la geometría haya obligado a usar soporte.
    - El PETG negro no deja pasar luz, por eso es agujero y no membrana.
 7. **Sensor de luz en el canto superior**, mirando al techo, como cuando se midieron
    los umbrales sobre la mesa.
+   - Desde la v5 la placa va con el header hacia la pared izquierda, lejos de la tira
+     de pines del display, y el agujero queda en X = 23 mm.
    - Lleva un agujero de Ø2.0 con 0.4 mm de tramo recto y abocinado de 45° hacia fuera.
      Desde la v4 el agujero arranca en un collar que baja 1 mm del techo, así que el
      túnel mide 2 mm y el agujero en la cara mide Ø5.2.
@@ -281,9 +362,13 @@ No hay ningún sitio donde la geometría haya obligado a usar soporte.
    - Un agujero recto en pared de 2 mm habría dado ≈ ±23° y ≈ 6.5×: demasiado.
    - Membrana descartada: el PETG negro es opaco y algunos negros dejan pasar
      infrarrojo, lo que falsearía el canal 1.
-8. **Touch en el canto superior**: bolsa de 15 × 15 × 0.5 mm que deja la pared en
-   1.5 mm (`pared_touch`). Desde la v4 está a la derecha y atrás, lejos de toda masa.
-   Sirve para un pad de cinta de cobre o lámina de 12–15 mm.
+8. **Touch en la pared derecha, abajo** (desde la v5): bolsa de 15 × 15 × 0.5 mm que
+   deja la pared en 1.5 mm (`pared_touch`). Sirve para un pad de cinta de cobre o
+   lámina de 12–15 mm.
+   - Hasta la v4 iba en el canto superior. Ahí ya están el TSL2561, la tira de pines
+     del display con su UTP y el gancho de la tapa, y no cabía todo.
+   - Va del lado del lector SD y no del ESP32, y abajo, donde hay menos componentes.
+     Queda detrás de la capa del display, a más de 10 mm de todo PCB.
 9. **Base tipo cuna en vez de pata.**
    - Recargado hacia atrás, el marco se apoya en su canto inferior trasero. Con el
      display al frente, el centro de masa queda delante de ese canto: una pata sola
@@ -305,54 +390,88 @@ No hay ningún sitio donde la geometría haya obligado a usar soporte.
 | Cant. | Pieza | Nota |
 |---|---|---|
 | 2 | Tornillo M3×25 Allen (cabeza Ø5.5 × 3) | Rosca directa en PETG; **sin insertos**. Otro largo: cambiar `tornillo_l` |
-| 1 | Pad de touch: cinta de cobre de 12–15 mm por lado | Dentro de la bolsa del canto superior (15 × 15) |
+| 1 | Pad de touch: cinta de cobre de 12–15 mm por lado | Dentro de la bolsa de la pared derecha, abajo (15 × 15) |
 | — | Silicón caliente | Alivio de tensión del UTP; fija los pernos del ESP32, el TSL2561 y el capacitor |
 | — | Termofit | Uniones soldadas |
 | 1 | Cable USB-C **recto** + cargador 5 V | Ya en inventario |
 
 ## Montaje (en orden)
 
-1. **Prueba en seco antes de soldar.** Mete el display en la carcasa frontal (pantalla
-   hacia el bisel) y presenta la tapa, para confirmar holguras.
-2. **Soldar el UTP** a display, ESP32, lector SD, TSL2561 y LED, con el capacitor de
-   100 µF y los cerámicos de 100 nF según el BOM. Deja el largo justo para que cada
-   módulo llegue a su sitio con la tapa abierta a un lado.
-3. **ESP32:** presiónalo por sus barrenos sobre los 4 pernos de la tapa, con
+Cada módulo entra ya soldado al UTP, así que mientras se arma la tapa (con el ESP32 y
+el lector SD) queda colgando de la carcasa por los cables, como una bisagra. Con
+tantos componentes el orden ya importa. La regla es **primero la tapa, después la
+carcasa frontal de adelante hacia atrás, y al final lo que cruza entre las dos (el
+cable USB y el cierre)**. Si agregas un componente, anótalo en la fase donde va y
+revisa que no tape a uno que se coloca después.
+
+**Fase 0 — Piezas sueltas, sin electrónica**
+
+1. **Rosca de los postes:** pasa cada M3×25 por su poste con la carcasa frontal
+   suelta, para hacer la rosca. Con los cables puestos ya no hay espacio para forzar.
+2. **Prueba en seco:** mete el display en la carcasa frontal (pantalla hacia el
+   bisel). Presenta la tapa con el ESP32 en sus pernos y el cable USB-C conectado: el
+   cuerpo del conector no debe tocar la calza y el cable debe entrar suelto en su
+   ranura. Así se encontró el choque de la v4.
+
+**Fase 1 — Soldar, fuera de la carcasa**
+
+3. **Soldar el UTP** a display, ESP32, lector SD, TSL2561, LED y pad de touch, con el
+   capacitor de 100 µF y los cerámicos de 100 nF según el BOM.
+   - Deja el largo justo para que cada módulo llegue a su sitio con la tapa abierta a
+     un lado.
+   - En el TSL2561, pasa el electrolítico de 10 µF a la altura de los pines (con UTP),
+     para que nada quede entre la placa y el techo.
+   - El pad de touch lleva **un solo hilo**, a GPIO32. No lo trences con tierra.
+
+**Fase 2 — Tapa (capa trasera)**
+
+4. **ESP32:** presiónalo por sus barrenos sobre los 4 pernos de la tapa, con
    componentes hacia la tapa y pines hacia el frente. Fija la punta de los pernos con
    una gota de silicón. El USB-C queda hacia abajo, alineado con la muesca.
-4. **Lector SD:** con la tarjeta ya puesta, mete sus 2 barrenos en los pernos de la tapa
+5. **Lector SD:** con la tarjeta ya puesta, mete sus 2 barrenos en los pernos de la tapa
    (ranura hacia arriba, porta-tarjeta hacia el frente) y fíjalos con silicón o
    fundiendo la punta. Revisa que la tarjeta no toque su tope.
-5. **TSL2561:** pasa antes el electrolítico de 10 µF a la altura de los pines (con
-   UTP), para que nada quede entre la placa y el techo. Colócalo bajo la bolsa del
-   canto superior de la carcasa frontal, con el chip centrado bajo el collar del túnel,
-   hacia arriba, barrenos a la izquierda y header a la derecha, vistos de frente.
-   Mete sus dos barrenos en los pernos del techo: eso lo centra bajo el túnel. Fíjalo
-   con un punto de silicón. La repisa de la tapa lo sostiene por debajo al cerrar.
-6. **LED:** empújalo por detrás en su funda de la barbilla y fija con silicón.
-7. **Pad de touch:** pégalo en la bolsa del canto superior y suelda el cable a GPIO32
-   **en la mitad izquierda del pad**. La mitad derecha queda a 0.6 mm sobre el poste
-   superior derecho del display, y ahí no cabe una soldadura. El hilo va solo: no lo
-   trences con tierra y aléjalo del cable del backlight (GPIO19).
-8. **Alivio de tensión:** un punto de silicón junto a cada soldadura y sobre el UTP
-   donde cruza hacia la tapa. Ningún cable debe tirar del header del SD ni del
-   receptáculo USB.
-9. **Display:** déjalo en la carcasa frontal, sobre topes y nervios. Al cerrar, los
-   pernos de los cuatro postes deben entrar en los cuatro barrenos del PCB. Pasa el UTP
-   del header del display por delante del header del TSL2561: sus volúmenes de cables
-   quedan a 0.08 mm.
-10. **Cable y cierre:**
-    - Con la tapa todavía abierta, conecta el USB-C al ESP32 y deja el cable colgando
-      hacia abajo.
-    - Mete el labio de la tapa en la ranura superior con la tapa inclinada, y bájala.
-      Al cerrar, el cable entra por detrás en la ranura de la calza y el overmold queda
-      justo encima de ella.
-    - Mete los 2 M3×25 por los cajeados: la guía los lleva al poste. La primera vez,
-      pasa el tornillo por el poste con la pieza suelta, para hacer la rosca. Aprieta
-      suave hasta que la cabeza quede al ras: es rosca en plástico.
-    - Para desconectar el cable hay que abrir la tapa: la calza no deja salir el
-      conector, y para eso está.
-11. **Base:** asienta el marco en la cuna con el cable en su canal.
+
+**Fase 3 — Carcasa frontal, de adelante hacia atrás** (carcasa boca abajo sobre la
+mesa)
+
+6. **LED:** empújalo por detrás en su funda de la barbilla y fíjalo con silicón. Va
+   antes que el display para no apoyar la mano cerca del vidrio.
+7. **Display:** déjalo en la carcasa frontal, sobre topes y nervios, con la tira de
+   pines arriba. Al cerrar, los pernos de los cuatro postes de la tapa entran en sus
+   cuatro barrenos.
+8. **TSL2561:** va después del display, porque su placa queda 0.4 mm por encima del
+   volumen del UTP del display. Acomoda primero ese UTP.
+   - Colócalo bajo la bolsa del canto superior, con el chip hacia arriba y centrado bajo
+     el collar del túnel, **barrenos a la derecha y header a la izquierda**, vistos de
+     frente (desde la v5). Los pines quedan hacia la pared izquierda.
+   - Mete sus dos barrenos en los pernos del techo: eso lo centra bajo el túnel. Fíjalo
+     con un punto de silicón. La repisa de la tapa lo sostiene por debajo al cerrar.
+9. **Pad de touch:** pégalo en la bolsa de la **pared derecha, abajo** (lado del lector
+   SD, vista frontal). No estorba a nada, así que puede ir en cualquier momento de esta
+   fase.
+   - La soldadura cabe en cualquier punto del pad: lo más cercano es la tapa, a 3 mm.
+   - Lleva el hilo por debajo del lector SD hacia el ESP32, lejos del cable del
+     backlight (GPIO19).
+10. **Alivio de tensión:** un punto de silicón junto a cada soldadura y sobre el UTP
+    donde cruza hacia la tapa. Ningún cable debe tirar del header del SD ni del
+    receptáculo USB.
+
+**Fase 4 — Cierre**
+
+11. **Cable USB-C:** con la tapa todavía abierta, conéctalo al ESP32 y déjalo colgando
+    hacia abajo.
+12. **Tapa:** mete su labio en la ranura superior con la tapa inclinada, y bájala.
+    - El cable entra por detrás en la ranura de la calza, que le queda holgada, y el
+      cuerpo del conector queda 2.5 mm encima de ella. Si hay que empujar el cable, algo
+      está desalineado: no fuerces.
+    - Revisa que ningún cable quede atrapado entre la tapa y las repisas.
+13. **Tornillos:** mete los 2 M3×25 por los cajeados: la guía los lleva al poste.
+    Aprieta suave hasta que la cabeza quede al ras: es rosca en plástico.
+14. **Base:** asienta el marco en la cuna con el cable en su canal.
+
+Para desconectar el cable hay que abrir la tapa: la calza no deja salir el conector, y
+para eso está.
 
 Por la parte frontal y los costados no se ve ninguna soldadura ni cable. Lo único que
 sale es el USB-C, por el canto inferior trasero.
@@ -384,6 +503,10 @@ sale es el USB-C, por el canto inferior trasero.
   - Ancho y grueso del cuerpo del conector (12 × 6.5 mm supuestos): sin medir, pero en
     el test fit de la v3 el cable entró y dobló sin problema. Ya están medidos el cable
     (Ø4.0), la bota (Ø5.3 × 5) y el fin del cuerpo (18 mm bajo el PCB).
+  - **Calza del USB-C (v5):** confirmar que el conector ya no la toca y cuánto aire
+    queda. Si sobra mucho, se puede bajar `usb_calza_aire`; si sigue tocando, medir
+    con el calibrador desde el borde del PCB del ESP32, montado en la tapa, hasta la
+    calza.
 - **Los modelos CAD vienen de internet:** las medidas del display, el ESP32 y el SD se
   tomaron de ellos. Si alguna pieza impresa no ajusta, compara esa cota con el
   calibrador antes de culpar a la impresora.
@@ -391,12 +514,30 @@ sale es el USB-C, por el canto inferior trasero.
   (126–137 lux sin carcasa). Si la atenuación queda < 5.8×, los umbrales 10/300 siguen
   separando todas las condiciones medidas; si no, se escalan en `updateBrightness()`.
 - **Touch:**
+  - Desde la v5 el pad va en la pared derecha, abajo, y su hilo cruza el ancho del
+    marco hasta GPIO32, que en el DevKit queda en la mitad superior del header: unos
+    7–10 cm, en el límite de los 5–10 cm del BOM. Medir el delta con el pad ya en su
+    bolsa y el marco cerrado: lo que importa es la masa alrededor, que cambió con la
+    posición.
   - Imprimir los cupones de la probeta (v4) y fijar `TOQUE_DELTA` (`firmware/src/toque.h`, provisional en 15) con la tecla `t`
     del banco, a través de cupones de PETG impresos con los **mismos perímetros y
     relleno** que la carcasa. Eso decide `pared_touch`: si a 1.5 mm la señal no
     alcanza, la pared es demasiado gruesa.
 - **Firmware, LED:** ahora mira al frente por un agujero de Ø3. Revisar si hay que
   bajar el brillo con `escala[3]`; el apagado a los 30 s se mantiene.
+
+## Para próximas iteraciones
+
+- **Postes de tornillo en las esquinas superiores.** Con los 2 tornillos de abajo y el
+  gancho arriba la tapa sujeta bien por ahora. Si hace falta más (tapa que se abre
+  arriba, más peso dentro), arriba no hay sitio libre: el PCB del display llena el
+  ancho con 0.3 mm por lado, y en las esquinas ya están los pernos de sus barrenos
+  superiores, el TSL2561 a la izquierda y el labio del gancho a la derecha. Opciones a
+  evaluar: postes detrás de la capa del display (capa trasera, junto al TSL2561 y al
+  extremo de la ranura del SD), o ensanchar la carcasa unos milímetros arriba.
+- **Orden de montaje.** Cada componente nuevo tiene que decir en qué fase entra (ver
+  Montaje). Si dos componentes se tapan entre sí, hay que resolverlo en el diseño, no
+  en el armado.
 
 ## Modelos CAD de los componentes
 
@@ -422,7 +563,8 @@ Están en el proyecto de Fusion (*Marco Fotos*) como documentos propios:
 
 Tras cambiar parámetros en Fusion, recolocar los CAD con `alinear_cad.py` y re-exportar cada componente imprimible
 (`Carcasa_frontal`, `Tapa_trasera`, `Base_cuna`, `Probeta_ajustes`) a esta carpeta con
-los mismos nombres de archivo.
+los mismos nombres de archivo. Usa refinamiento de malla **alto**
+(`MeshRefinementHigh`): con el medio, los pernos más delgados salen muy facetados.
 
 **Ojo: Fusion exporta vacío un componente oculto** y aun así responde que tuvo
 éxito. Antes de exportar, prende la visibilidad de los cuatro componentes y revisa

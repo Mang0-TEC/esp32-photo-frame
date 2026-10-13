@@ -1193,7 +1193,7 @@ La corrección cuenta lecturas fallidas seguidas y, tras `LUZ_FALLOS_MAX = 5` �
 
 ### Touch capacitivo nativo del ESP32
 
-Pad conductor pegado **por dentro** de la pared de la carcasa, en el canto superior. Funciona a través de 1.5-2 mm de **PETG** —la carcasa final es de PETG negro—, y el grosor en la zona del pad sale de la medición del banco (BOM, tecla `t`); la carcasa v3 lo deja provisional en 1.5 mm.
+Pad conductor pegado **por dentro** de la pared de la carcasa: en la pared derecha, abajo, desde la carcasa v5 (antes en el canto superior). Funciona a través de 1.5-2 mm de **PETG** —la carcasa final es de PETG negro—, y el grosor en la zona del pad sale de la medición del banco (BOM, tecla `t`); la carcasa v3 lo deja provisional en 1.5 mm.
 
 **Sin sensor visible. Sin botón. $0 de costo. Un GPIO.**
 
